@@ -1,0 +1,62 @@
+# --- IDE & OS ---
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.log
+.env
+.env.*
+!.env.example
+
+# --- Database & Persistent Data (DO NOT COMMIT DATA) ---
+/shared/database/*.db
+/shared/database/*.sqlite
+/shared/database/*.sqlite-journal
+/infra/data/
+/infra/postgres-data/
+/services/hazardy/.chroma/
+
+# --- Frontend (SvelteKit / Apps) ---
+/apps/hazardy-ui/node_modules/
+/apps/hazardy-ui/.svelte-kit/
+/apps/hazardy-ui/build/
+/apps/hazardy-ui/.vercel/
+/apps/hazardy-ui/.output/
+# If you use npm/pnpm, you might want to commit the lock file, 
+# but often for personal projects we ignore it if it causes conflicts.
+# /apps/hazardy-ui/package-lock.json
+
+# --- Mobile/Desktop (Tauri / Rust) ---
+/apps/hazardy-ui/src-tauri/target/
+/apps/hazardy-ui/src-tauri/binaries/
+/apps/hazardy-ui/src-tauri/gen/
+
+# --- Services (Go) ---
+/services/**/*.exe
+/services/**/bin/
+/services/**/vendor/
+# Compiled binaries per service
+/services/vault/vault
+/services/pick/pick
+/services/sync/sync
+/services/recap/recap
+/services/share/share
+
+# --- Services (Python / Litestar) ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.python-version
+/services/vibe/.cache/
+
+# --- Infrastructure & Docker ---
+.docker/
+*.tar
+*.tar.gz
+
+# --- Makefile & Temps ---
+dist/
+tmp/
