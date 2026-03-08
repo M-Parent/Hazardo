@@ -1,6 +1,50 @@
 @import "tailwindcss";
 
+/* 1. Tes polices locales (Variable Fonts) */
+@font-face {
+  font-family: "Outfit";
+  src: url("/fonts/outfit/Outfit-VariableFont_wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter/Inter-VariableFont_opsz,wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* 2. Configuration du Thème Tailwind v4 */
 @theme {
-  --color-brand-primary: #ff5733;
-  --font-sans: "Inter", ui-sans-serif, system-ui;
+  /* Polices */
+  --font-display: "Outfit", ui-sans-serif, system-ui;
+  --font-body: "Inter", ui-sans-serif, system-ui;
+
+  /* Couleurs Hazardo (Deviennent class="bg-hazardo-primary", etc.) */
+  --color-hazardo-primary: #8e58be;
+  --color-hazardo-secondary: #c199e4;
+  --color-hazardo-background: #f8f6fa;
+  --color-hazardo-text: #0f0c10;
+  --color-hazardo-accent: #a65de6;
+  --color-hazardo-lightGray: #cbd5e1;
+}
+
+/* 3. Styles de base (Appliqués automatiquement) */
+@layer base {
+  body {
+    @apply antialiased text-hazardo-text bg-hazardo-background;
+    font-family: var(--font-body);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  .title-font {
+    font-family: var(--font-display);
+    @apply font-bold text-2xl;
+  }
 }
