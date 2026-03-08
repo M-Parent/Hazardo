@@ -25,7 +25,7 @@
       <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
     </a>
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
+  <p class="my-24">Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
 
   <form class="row" onsubmit={greet}>
     <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
@@ -49,7 +49,7 @@
   line-height: 24px;
   font-weight: 400;
 
-  color: #0f0f0f;
+  color: #dc4848;
   background-color: #f6f6f6;
 
   font-synthesis: none;

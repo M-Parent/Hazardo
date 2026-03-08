@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "hazardo-ui",
+  "productName": "Hazardo",
   "version": "0.1.0",
   "identifier": "com.hazardo.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "hazardo-ui",
+        "title": "Hazardo",
         "width": 800,
         "height": 600
       }
