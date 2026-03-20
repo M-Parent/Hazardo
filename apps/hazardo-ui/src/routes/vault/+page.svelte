@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { selectedUser } from '../../stores/userStore';
+  import { t } from '../../stores/i18nStore';
   import Title from '../../components/atoms/Title.svelte';
   import Icon from '../../components/atoms/Icon.svelte';
   import FormLabel from '../../components/atoms/FormLabel.svelte';
@@ -12,6 +13,7 @@
   import ScrollToTop from '../../components/atoms/ScrollToTop.svelte';
   import type { Category, Item } from '$lib/types';
   import { DEFAULT_CATEGORIES } from '$lib/defaultCategories';
+  import { TIME_OPTIONS, VIBE_OPTIONS } from '$lib/constants';
 
   let categories: Category[] = [];
   let items: Item[] = [];
@@ -36,8 +38,8 @@
   let itemNotes = '';
   let itemIsPicked = 0;
 
-  const timeOptions = ['AM', 'PM', 'Night', 'Mixed'];
-  const vibeOptions = ['Friend', 'Date', 'Family', 'Mixed'];
+  const timeOptions = [...TIME_OPTIONS];
+  const vibeOptions = [...VIBE_OPTIONS];
 
   $: if ($selectedUser) {
     loadCategories($selectedUser.user_id);
@@ -52,7 +54,7 @@
     : items;
 
   $: categoryOptions = [
-    { value: '', label: 'All Lists', icon: '' },
+    { value: '', label: $t('vault.all_lists'), icon: '' },
     ...categories.map(c => ({ value: String(c.category_id), label: c.category_name, icon: c.category_icon }))
   ];
 
@@ -200,21 +202,21 @@
   <!-- Static header section -->
   <div class="flex flex-col items-center">
     <div class="mt-6 mb-6 bg-hazardo-accent px-2 rounded">
-      <Title title="Vault of {$selectedUser?.user_name ?? 'User'}" />
+      <Title title="{$t('vault.title_of')} {$selectedUser?.user_name ?? 'User'}" />
     </div>
   </div>
 
   <div class="mb-3">
-    <FormLabel label="Select Categories:" />
+    <FormLabel label={$t('vault.select_categories')} />
     <div class="mt-1 flex gap-2">
       <div class="flex-1">
         <SelectDropdown options={categoryOptions} bind:selected={selectedCategoryId} placeholder="" />
       </div>
       {#if selectedCategoryId}
         <button
-          class="bg-white border border-hazardo-lightGray text-hazardo-primary rounded p-2 hover:bg-hazardo-background transition-colors"
+          class="bg-hazardo-surface border border-hazardo-lightGray text-hazardo-primary rounded p-2 hover:bg-hazardo-background transition-colors"
           on:click={openEditCategory}
-          title="Edit Category"
+          title={$t('vault.edit_category')}
         >
           <Icon name="edit" size={18} />
         </button>
@@ -222,7 +224,7 @@
       <button
         class="bg-hazardo-accent text-white rounded p-2 hover:bg-hazardo-primary transition-colors"
         on:click={openAddCategory}
-        title="Add Category"
+        title={$t('vault.add_category')}
       >
         <Icon name="plus" size={18} />
       </button>
@@ -235,11 +237,11 @@
 
   <!-- Scrollable item list -->
   <div class="flex items-center justify-between mb-2">
-    <h3 class="title-font text-base">Item List:</h3>
+    <h3 class="title-font text-base">{$t('vault.item_list')}</h3>
     <button
       class="bg-hazardo-accent text-white rounded-full w-9 h-9 flex items-center justify-center hover:bg-hazardo-primary transition-colors"
       on:click={openAddItem}
-      title="Add Item"
+      title={$t('vault.add_item')}
     >
       <Icon name="plus" size={18} />
     </button>
@@ -247,7 +249,7 @@
 
   <div class="flex-1 overflow-y-auto" bind:this={listContainer}>
     {#if filteredItems.length === 0}
-      <p class="text-center text-hazardo-lightGray py-8 text-sm">No items yet. Add your first item!</p>
+      <p class="text-center text-hazardo-lightGray py-8 text-sm">{$t('vault.no_items')}</p>
     {:else}
       {#each filteredItems as item, i}
         <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -276,55 +278,55 @@
 </main>
 
 <!-- Add/Edit Category Modal -->
-<Modal bind:show={showCategoryModal} title={editingCategory ? 'Edit Category' : 'Add Category'} width="w-96">
+<Modal bind:show={showCategoryModal} title={editingCategory ? $t('vault.edit_category') : $t('vault.add_category')} width="w-96">
   <div class="flex flex-col gap-4 pb-48">
     <div class="flex flex-col">
-      <FormLabel label="Category Name:" />
-      <FormInput bind:value={catName} placeholder="Enter category name..." />
+      <FormLabel label={$t('vault.category_name')} />
+      <FormInput bind:value={catName} placeholder={$t('vault.category_name_ph')} />
     </div>
     <div class="flex flex-col">
-      <FormLabel label="Icon:" />
+      <FormLabel label={$t('vault.icon')} />
       <SelectDropdown options={iconOptions} bind:selected={catIcon} placeholder="" />
     </div>
     <div class="flex justify-end gap-2">
       {#if !editingCategory}
-        <button type="button" class="px-4 py-2 rounded border border-hazardo-accent text-hazardo-accent text-sm font-medium hover:bg-hazardo-background transition-colors" on:click={() => handleSaveCategory(true)}>Add</button>
-        <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveCategory(false)}>Done</button>
+        <button type="button" class="px-4 py-2 rounded border border-hazardo-accent text-hazardo-accent text-sm font-medium hover:bg-hazardo-background transition-colors" on:click={() => handleSaveCategory(true)}>{$t('vault.add')}</button>
+        <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveCategory(false)}>{$t('vault.done')}</button>
       {:else}
-        <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveCategory(false)}>Save</button>
+        <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveCategory(false)}>{$t('settings.save')}</button>
       {/if}
     </div>
   </div>
 </Modal>
 
 <!-- Add/Edit Item Modal -->
-<Modal bind:show={showItemModal} title={editingItem ? 'Edit Item' : 'Add Item'} width="w-96">
+<Modal bind:show={showItemModal} title={editingItem ? $t('vault.edit_item') : $t('vault.add_item')} width="w-96">
   <div class="flex flex-col gap-4">
     <div class="flex flex-col">
-      <FormLabel label="Item Name:" />
-      <FormInput bind:value={itemName} placeholder="Enter item name..." />
+      <FormLabel label={$t('vault.item_name')} />
+      <FormInput bind:value={itemName} placeholder={$t('vault.item_name_ph')} />
     </div>
     <div class="flex flex-col">
-      <FormLabel label="Category:" />
-      <SelectDropdown options={itemCategoryOptions} bind:selected={itemCategoryId} placeholder="Select category" />
+      <FormLabel label={$t('vault.category')} />
+      <SelectDropdown options={itemCategoryOptions} bind:selected={itemCategoryId} placeholder={$t('vault.select_category')} />
     </div>
     <div>
-      <FormLabel label="Time Preference:" />
+      <FormLabel label={$t('vault.time_pref')} />
       <div class="mt-1">
         <OptionToggle options={timeOptions} bind:selected={itemTimePref} />
       </div>
     </div>
     <div>
-      <FormLabel label="Vibe Preference:" />
+      <FormLabel label={$t('vault.vibe_pref')} />
       <div class="mt-1">
         <OptionToggle options={vibeOptions} bind:selected={itemVibePref} />
       </div>
     </div>
     <div class="flex flex-col">
-      <FormLabel label="Notes (optional):" />
+      <FormLabel label={$t('vault.notes_optional')} />
       <textarea
         bind:value={itemNotes}
-        placeholder="Add notes..."
+        placeholder={$t('vault.add_notes_ph')}
         class="border rounded p-2 border-hazardo-lightGray focus:outline-hazardo-accent w-full text-sm resize-none"
         rows="2"
       ></textarea>
@@ -332,15 +334,15 @@
     {#if editingItem}
       <label class="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={itemIsPicked === 1} on:change={(e) => itemIsPicked = e.currentTarget.checked ? 1 : 0} class="w-4 h-4 accent-hazardo-accent" />
-        Already Picked (strikethrough in list)
+        {$t('vault.already_picked')}
       </label>
     {/if}
     <div class="flex justify-end gap-2">
       {#if !editingItem}
-        <button type="button" class="px-4 py-2 rounded border border-hazardo-accent text-hazardo-accent text-sm font-medium hover:bg-hazardo-background transition-colors" on:click={() => handleSaveItem(true)}>Add</button>
-        <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveItem(false)}>Done</button>
+        <button type="button" class="px-4 py-2 rounded border border-hazardo-accent text-hazardo-accent text-sm font-medium hover:bg-hazardo-background transition-colors" on:click={() => handleSaveItem(true)}>{$t('vault.add')}</button>
+        <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveItem(false)}>{$t('vault.done')}</button>
       {:else}
-        <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveItem(false)}>Save</button>
+        <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveItem(false)}>{$t('settings.save')}</button>
       {/if}
     </div>
   </div>

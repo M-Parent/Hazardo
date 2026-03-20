@@ -8,7 +8,9 @@
   import FormInput from '../../components/atoms/FormInput.svelte';
 
   import { invoke } from '@tauri-apps/api/core';
+  import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
   import { loadUsers } from '../../stores/userStore';
+  import { t } from '../../stores/i18nStore';
 
   let deviceName = '';
   let username = '';
@@ -28,20 +30,36 @@
 
   function requestLocationPermission() {
     if (!navigator.geolocation) {
-      locationStatus = 'denied';
+      ipFallbackSetup();
       return;
     }
     locationStatus = 'requesting';
     navigator.geolocation.getCurrentPosition(
       () => { locationStatus = 'granted'; locationEnabled = true; },
-      () => { locationStatus = 'denied'; locationEnabled = false; },
+      () => { ipFallbackSetup(); },
       { enableHighAccuracy: true, timeout: 15000 }
     );
   }
 
+  async function ipFallbackSetup() {
+    try {
+      const resp = await tauriFetch('https://ipwho.is/', { method: 'GET' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.success !== false && data.latitude && data.longitude) {
+          locationStatus = 'granted';
+          locationEnabled = true;
+          return;
+        }
+      }
+    } catch (_) {}
+    locationStatus = 'denied';
+    locationEnabled = false;
+  }
+
   async function save() {
     if (!deviceName || deviceName.trim() === '') {
-      alert('Please enter a device name');
+      alert($t('setup.alert_device_name'));
       return;
     }
 
@@ -50,13 +68,11 @@
         deviceName: deviceName.trim(),
         userName: username && username.trim() !== '' ? username.trim() : null,
       });
-      if (username && username.trim() !== '') {
-        await loadUsers();
-        // Save location preference
-        const users = await invoke<{user_id: number}[]>('get_users');
-        if (users.length > 0) {
-          await invoke('set_setting', { userId: users[0].user_id, key: 'location_enabled', value: locationEnabled ? 'true' : 'false' });
-        }
+      await loadUsers();
+      // Save location preference for the newly created user
+      const users = await invoke<{user_id: number}[]>('get_users');
+      if (users.length > 0 && locationEnabled) {
+        await invoke('set_setting', { userId: users[0].user_id, key: 'location_enabled', value: 'true' });
       }
       goto('/');
     } catch (err) {
@@ -70,44 +86,44 @@
   <LogoTxt />
   <div class="flex flex-col items-center">
     <div class="mt-14 mb-10 bg-hazardo-accent px-2 rounded">
-      <Title title="Welcome to Hazardo!" />
+      <Title title={$t('setup.welcome')} />
     </div>
-    <p class="text-lg mx-auto max-w-78 mb-6">Identify this device to enable seamless syncing across all your devices.</p>
+    <p class="text-lg mx-auto max-w-78 mb-6">{$t('setup.device_desc')}</p>
     <div>
       <form on:submit|preventDefault={save} class="max-w-78">
         <div class="flex flex-col mb-6">
-          <FormLabel label="Device Name:" htmlFor="deviceName" />
-          <FormInput id="deviceName" name="deviceName" bind:value={deviceName} placeholder="Enter Device name..." />
+          <FormLabel label={$t('setup.device_name')} htmlFor="deviceName" />
+          <FormInput id="deviceName" name="deviceName" bind:value={deviceName} placeholder={$t('setup.device_name_ph')} />
         </div>
-        <p class="text-lg mx-auto max-w-78 mb-6">Create a username to get started. You can host multiple users on this device, each with their own unique categories and lists.</p>
+        <p class="text-lg mx-auto max-w-78 mb-6">{$t('setup.user_desc')}</p>
         <div class="flex flex-col mb-10">
-          <FormLabel label="Username:" htmlFor="username" />
-          <FormInput id="username" name="username" bind:value={username} placeholder="Enter Username..." />
+          <FormLabel label={$t('setup.username')} htmlFor="username" />
+          <FormInput id="username" name="username" bind:value={username} placeholder={$t('setup.username_ph')} />
         </div>
         <div class="flex flex-col mb-10">
-          <p class="text-sm text-hazardo-lightGray mb-3">Allow location access for weather info and local recommendations when rolling dice.</p>
+          <p class="text-sm text-hazardo-lightGray mb-3">{$t('setup.location_desc')}</p>
           {#if locationStatus === 'idle'}
             <button type="button" class="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-hazardo-accent text-white text-sm font-medium" on:click={requestLocationPermission}>
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-              Allow Location Access
+              {$t('location.allow')}
             </button>
           {:else if locationStatus === 'requesting'}
             <div class="flex items-center gap-2 text-sm text-hazardo-lightGray">
               <div class="w-4 h-4 border-2 border-hazardo-accent border-t-transparent rounded-full animate-spin"></div>
-              Requesting permission...
+              {$t('location.requesting')}
             </div>
           {:else if locationStatus === 'granted'}
             <div class="flex items-center gap-2 text-sm text-green-600 font-medium">
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-              Location access granted
+              {$t('setup.location_granted')}
             </div>
           {:else if locationStatus === 'denied'}
             <div class="flex flex-col gap-2">
               <div class="flex items-center gap-2 text-sm text-red-500 font-medium">
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                Location access denied
+                {$t('setup.location_denied')}
               </div>
-              <button type="button" class="text-xs text-hazardo-accent underline text-left" on:click={requestLocationPermission}>Try again</button>
+              <button type="button" class="text-xs text-hazardo-accent underline text-left" on:click={requestLocationPermission}>{$t('setup.location_try_again')}</button>
             </div>
           {/if}
         </div>

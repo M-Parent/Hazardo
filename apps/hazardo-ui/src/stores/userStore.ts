@@ -18,9 +18,21 @@ export async function loadUsers(): Promise<void> {
   }
 }
 
+/** Max username length */
+const MAX_USERNAME_LENGTH = 50;
+
+/** Validate and sanitize a username */
+function validateUserName(name: string): string | null {
+  const trimmed = name.trim().slice(0, MAX_USERNAME_LENGTH);
+  if (!trimmed) return null;
+  return trimmed;
+}
+
 export async function createNewUser(userName: string): Promise<User | null> {
+  const sanitized = validateUserName(userName);
+  if (!sanitized) return null;
   try {
-    const created = await invoke<User>("create_user", { userName });
+    const created = await invoke<User>("create_user", { userName: sanitized });
     users.update((u) => [...u, created]);
     selectedUser.set(created);
     return created;
@@ -42,6 +54,28 @@ export async function deleteUserById(userId: number): Promise<boolean> {
     return true;
   } catch (e) {
     console.error("delete_user failed", e);
+    return false;
+  }
+}
+
+export async function updateUserName(
+  userId: number,
+  userName: string,
+): Promise<boolean> {
+  const sanitized = validateUserName(userName);
+  if (!sanitized) return false;
+  try {
+    await invoke("update_user", { userId, userName: sanitized });
+    users.update((u) =>
+      u.map((x) => (x.user_id === userId ? { ...x, user_name: userName } : x)),
+    );
+    const current = get(selectedUser);
+    if (current?.user_id === userId) {
+      selectedUser.set({ ...current, user_name: userName });
+    }
+    return true;
+  } catch (e) {
+    console.error("update_user failed", e);
     return false;
   }
 }

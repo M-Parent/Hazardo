@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-  import { selectedUser, users, loadUsers } from '../../stores/userStore';
+  import { selectedUser, users, loadUsers, updateUserName } from '../../stores/userStore';
   import Title from '../../components/atoms/Title.svelte';
   import Icon from '../../components/atoms/Icon.svelte';
   import FormLabel from '../../components/atoms/FormLabel.svelte';
@@ -11,6 +11,8 @@
   import SearchBar from '../../components/molecules/SearchBar.svelte';
   import ScrollToTop from '../../components/atoms/ScrollToTop.svelte';
   import { showToast } from '../../stores/toastStore';
+  import { t, currentLang, formatDateLocalized, saveLanguageSetting, type Lang } from '../../stores/i18nStore';
+  import { currentTheme, saveThemeSetting, type Theme } from '../../stores/themeStore';
   import type { AppSetting, Device, Item, Category, Pick as PickType, User } from '$lib/types';
 
   let activeSection = '';
@@ -53,6 +55,8 @@
 
   // Manage User
   let showManageUser = false;
+  let editingUserId: number | null = null;
+  let editingUserName = '';
 
   // Export
   let exportUserSelection: Record<number, boolean> = {};
@@ -66,6 +70,10 @@
   let exportFilePath = '';
   let exportSaving = false;
   let exportSharing = false;
+  let exportIncludePicks = false;
+  let exportPicks: PickType[] = [];
+  let exportPickSelection: Record<number, boolean> = {};
+  let exportAllPicks = false;
   const exportFormatOptions = [
     { value: 'json', label: 'JSON' },
     { value: 'csv', label: 'CSV' },
@@ -76,15 +84,18 @@
   // Import
   let importFormat = 'json';
   let importFileContent = '';
+  let importZipBase64 = '';
   let importResult = '';
   let importLoading = false;
   let importFileInput: HTMLInputElement;
+  $: importAccept = importFormat === 'zip' ? '.zip' : importFormat === 'markdown' ? '.md,.txt' : importFormat === 'csv' ? '.csv,.txt' : '.json';
+  $: if (importFormat) { importFileContent = ''; importZipBase64 = ''; if (importFileInput) importFileInput.value = ''; }
 
-  const llmProviderOptions = [
-    { value: '', label: 'Not configured' },
-    { value: 'openai', label: 'OpenAI (GPT)' },
-    { value: 'gemini', label: 'Google Gemini' },
-    { value: 'local', label: 'Local LLM (Ollama/LM Studio)' },
+  $: llmProviderOptions = [
+    { value: '', label: $t('llm.not_configured') },
+    { value: 'openai', label: $t('llm.openai_label') },
+    { value: 'gemini', label: $t('llm.gemini_label') },
+    { value: 'local', label: $t('llm.local_label') },
   ];
 
   const settingsSections = [
@@ -92,8 +103,8 @@
     { key: 'recycle-bin', label: 'Recycle Bin', icon: 'recycle' as const },
     { key: 'bulk-import', label: 'Bulk Import', icon: 'import' as const },
     { key: 'bulk-export', label: 'Bulk Export', icon: 'export' as const },
-    { key: 'theme', label: 'Theme', extra: '(Auto System)', icon: 'palette' as const },
-    { key: 'language', label: 'Language', extra: '(English)', icon: 'globe' as const },
+    { key: 'theme', label: 'theme_label', extra: 'theme_extra', icon: 'palette' as const },
+    { key: 'language', label: 'language_label', extra: 'language_extra', icon: 'globe' as const },
     { key: 'device-name', label: 'Device Name', icon: 'monitor' as const },
     { key: 'manage-user', label: 'Manage User', icon: 'users' as const },
     { key: 'manage-sync', label: 'Manage Synchronization', icon: 'sync' as const },
@@ -137,6 +148,19 @@
     exportCategorySelection = exportCategorySelection;
   }
 
+  $: {
+    if (selectedExportUserIds.length > 0 && activeSection === 'bulk-export') {
+      loadExportPicks(selectedExportUserIds);
+    }
+  }
+
+  $: {
+    if (exportAllPicks) {
+      exportPicks.forEach(p => exportPickSelection[p.pick_id] = true);
+    }
+    exportPickSelection = exportPickSelection;
+  }
+
   async function loadExportCategories(uids: number[]) {
     let cats: Category[] = [];
     for (const uid of uids) {
@@ -146,6 +170,17 @@
       } catch (_) {}
     }
     exportCategories = cats;
+  }
+
+  async function loadExportPicks(uids: number[]) {
+    let allPicks: PickType[] = [];
+    for (const uid of uids) {
+      try {
+        const p = await invoke<PickType[]>('get_picks', { userId: uid, categoryId: null });
+        allPicks = [...allPicks, ...p];
+      } catch (_) {}
+    }
+    exportPicks = allPicks;
   }
 
   async function loadDevice() {
@@ -325,7 +360,8 @@
 
   function requestLocationPermission() {
     if (!navigator.geolocation) {
-      locationPermissionStatus = 'denied';
+      // No geolocation API — try IP-based fallback
+      ipFallbackPermission();
       return;
     }
     locationPermissionStatus = 'requesting';
@@ -335,9 +371,28 @@
         locationEnabled = true;
         saveSetting('location_enabled', 'true');
       },
-      () => { locationPermissionStatus = 'denied'; },
+      () => {
+        // GPS failed — try IP-based fallback
+        ipFallbackPermission();
+      },
       { enableHighAccuracy: true, timeout: 15000 }
     );
+  }
+
+  async function ipFallbackPermission() {
+    try {
+      const resp = await tauriFetch('https://ipwho.is/', { method: 'GET' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.success !== false && data.latitude && data.longitude) {
+          locationPermissionStatus = 'granted';
+          locationEnabled = true;
+          saveSetting('location_enabled', 'true');
+          return;
+        }
+      }
+    } catch (_) {}
+    locationPermissionStatus = 'denied';
   }
 
   async function searchLocation() {
@@ -417,13 +472,18 @@
     if (key === 'bulk-export') {
       exportUserSelection = {};
       exportCategorySelection = {};
+      exportPickSelection = {};
       exportResult = '';
       exportAllUsers = false;
       exportAllCategories = false;
+      exportAllPicks = false;
+      exportIncludePicks = false;
+      exportPicks = [];
     }
     if (key === 'bulk-import') {
       importResult = '';
       importFileContent = '';
+      importZipBase64 = '';
     }
   }
 
@@ -446,7 +506,7 @@
           target: 'downloads',
         });
         exportResult = 'ZIP file exported successfully with data and images.';
-        showToast('Export successful!', 'success');
+        showToast(`Export saved to: ${exportFilePath}`, 'success');
         activeSection = '';
       } else {
         const jsonStr = await invoke<string>('export_data', { userIds, categoryIds: catIds });
@@ -515,12 +575,23 @@
     exportSaving = true;
     try {
       const ext = exportFormat === 'csv' ? 'csv' : exportFormat === 'markdown' ? 'md' : 'json';
+      const mime = exportFormat === 'csv' ? 'text/csv' : exportFormat === 'markdown' ? 'text/markdown' : 'application/json';
       const filename = `hazardo_export_${Date.now()}.${ext}`;
-      exportFilePath = await invoke<string>('save_export_file', { content: exportResult, filename, target: 'downloads' });
-      showToast('File saved to Downloads!', 'success');
+      const blob = new Blob([exportResult], { type: mime });
+      const file = new File([blob], filename, { type: mime });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Hazardo Export' });
+        showToast('Export shared!', 'success');
+      } else {
+        // Fallback: save to Downloads
+        exportFilePath = await invoke<string>('save_export_file', { content: exportResult, filename, target: 'downloads' });
+        showToast(`File saved to: ${exportFilePath}`, 'success');
+      }
       activeSection = '';
     } catch (e: any) {
-      exportFilePath = `Error: ${e.message || e}`;
+      if (e.name !== 'AbortError') {
+        exportFilePath = `Error: ${e.message || e}`;
+      }
     }
     exportSaving = false;
   }
@@ -558,9 +629,23 @@
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => { importFileContent = reader.result as string; };
-    reader.readAsText(file);
+    if (importFormat === 'zip') {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const arrayBuf = reader.result as ArrayBuffer;
+        const bytes = new Uint8Array(arrayBuf);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        importZipBase64 = btoa(binary);
+        importFileContent = `[ZIP file: ${file.name} — ${(bytes.length / 1024).toFixed(1)} KB]`;
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      importZipBase64 = '';
+      const reader = new FileReader();
+      reader.onload = () => { importFileContent = reader.result as string; };
+      reader.readAsText(file);
+    }
   }
 
   async function handleImport() {
@@ -568,15 +653,20 @@
     importLoading = true;
     importResult = '';
     try {
-      let jsonData: string;
-      if (importFormat === 'json') {
-        jsonData = importFileContent;
-      } else if (importFormat === 'csv') {
-        jsonData = JSON.stringify(csvToJson(importFileContent));
+      if (importFormat === 'zip') {
+        if (!importZipBase64) { importResult = 'Import error: No ZIP file selected'; importLoading = false; return; }
+        importResult = await invoke<string>('import_zip', { userId: $selectedUser.user_id, zipBase64: importZipBase64 });
       } else {
-        jsonData = JSON.stringify(markdownToJson(importFileContent));
+        let jsonData: string;
+        if (importFormat === 'json') {
+          jsonData = importFileContent;
+        } else if (importFormat === 'csv') {
+          jsonData = JSON.stringify(csvToJson(importFileContent));
+        } else {
+          jsonData = JSON.stringify(markdownToJson(importFileContent));
+        }
+        importResult = await invoke<string>('import_data', { userId: $selectedUser.user_id, data: jsonData });
       }
-      importResult = await invoke<string>('import_data', { userId: $selectedUser.user_id, data: jsonData });
       showToast(importResult, 'success');
       activeSection = '';
     } catch (e: any) {
@@ -619,18 +709,51 @@
   }
 
   function formatDate(dateStr: string): string {
-    if (!dateStr) return '';
-    try {
-      const d = new Date(dateStr);
-      return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
-    } catch { return dateStr; }
+    return formatDateLocalized(dateStr, $currentLang);
+  }
+
+  function getSectionLabel(section: any): string {
+    const map: Record<string, string> = {
+      'documentation': $t('settings.documentation'),
+      'recycle-bin': $t('settings.recycle_bin'),
+      'bulk-import': $t('settings.bulk_import'),
+      'bulk-export': $t('settings.bulk_export'),
+      'theme_label': $t('settings.theme'),
+      'language_label': $t('settings.language'),
+      'device-name': $t('settings.device_name'),
+      'manage-user': $t('settings.manage_user'),
+      'manage-sync': $t('settings.manage_sync'),
+      'manage-location': $t('settings.location_services'),
+      'manage-llm': $t('settings.manage_llm'),
+    };
+    return map[section.label] || map[section.key] || section.label;
+  }
+
+  function getSectionExtra(section: any): string {
+    if (section.extra === 'theme_extra') {
+      return `(${$currentTheme === 'dark' ? $t('settings.theme_dark') : $t('settings.theme_light')})`;
+    }
+    if (section.extra === 'language_extra') {
+      return `(${$currentLang === 'fr' ? $t('settings.french') : $t('settings.english')})`;
+    }
+    return section.extra || '';
+  }
+
+  async function handleThemeChange(theme: Theme) {
+    if (!$selectedUser) return;
+    await saveThemeSetting($selectedUser.user_id, theme);
+  }
+
+  async function handleLanguageChange(lang: Lang) {
+    if (!$selectedUser) return;
+    await saveLanguageSetting($selectedUser.user_id, lang);
   }
 </script>
 
 <main class="max-w-lg mx-auto px-4">
   <div class="flex flex-col items-center">
     <div class="mt-6 mb-6 bg-hazardo-accent px-2 rounded">
-      <Title title="Setting" />
+      <Title title={$t('settings.title')} />
     </div>
   </div>
 
@@ -641,9 +764,9 @@
         on:click={() => openSection(section.key)}
       >
         <span class="text-sm font-medium">
-          {section.label}
+          {getSectionLabel(section)}
           {#if section.extra}
-            <span class="text-hazardo-lightGray font-normal">{section.extra}</span>
+            <span class="text-hazardo-lightGray font-normal">{getSectionExtra(section)}</span>
           {/if}
         </span>
         <Icon name="chevron-right" size={16} />
@@ -653,52 +776,65 @@
 </main>
 
 <!-- Device Name Modal -->
-<Modal show={activeSection === 'device-name'} title="Device Name" on:close={() => activeSection = ''}>
+<Modal show={activeSection === 'device-name'} title={$t('settings.device_name')} on:close={() => activeSection = ''}>
   <form on:submit|preventDefault={saveDeviceName} class="flex flex-col gap-4">
     <div class="flex flex-col">
-      <FormLabel label="Device Name:" />
-      <FormInput bind:value={editDeviceName} placeholder="Enter device name..." />
+      <FormLabel label={$t('settings.device_name') + ':'} />
+      <FormInput bind:value={editDeviceName} placeholder="..." />
     </div>
     <div class="flex justify-end gap-2">
-      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm" on:click={() => activeSection = ''}>Cancel</button>
-      <button type="submit" class="px-4 py-1 rounded bg-hazardo-primary text-white text-sm">Save</button>
+      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm text-hazardo-text" on:click={() => activeSection = ''}>{$t('settings.cancel')}</button>
+      <button type="submit" class="px-4 py-1 rounded bg-hazardo-primary text-white text-sm">{$t('settings.save')}</button>
     </div>
   </form>
 </Modal>
 
 <!-- Manage User Modal -->
-<Modal show={activeSection === 'manage-user'} title="Manage Users" on:close={() => activeSection = ''}>
+<Modal show={activeSection === 'manage-user'} title={$t('settings.manage_user')} on:close={() => { activeSection = ''; editingUserId = null; }}>
   <div class="flex flex-col gap-2">
     {#each $users as u}
       <div class="flex items-center justify-between py-2 border-b border-hazardo-lightGray/30">
-        <span class="text-sm {$selectedUser?.user_id === u.user_id ? 'text-hazardo-primary font-semibold' : ''}">{u.user_name}</span>
-        <button class="p-1 text-hazardo-lightGray hover:text-red-500" on:click={() => deleteUser(u.user_id)}>
-          <Icon name="trash" size={14} />
-        </button>
+        {#if editingUserId === u.user_id}
+          <form class="flex items-center gap-2 flex-1" on:submit|preventDefault={async () => { if (editingUserName.trim()) { await updateUserName(u.user_id, editingUserName.trim()); editingUserId = null; } }}>
+            <input type="text" bind:value={editingUserName} class="border rounded px-2 py-1 text-sm flex-1 border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface text-hazardo-text" />
+            <button type="submit" class="px-2 py-1 rounded bg-hazardo-primary text-white text-xs">{$t('settings.save')}</button>
+            <button type="button" class="px-2 py-1 rounded border border-hazardo-lightGray text-xs text-hazardo-text" on:click={() => editingUserId = null}>{$t('settings.cancel')}</button>
+          </form>
+        {:else}
+          <span class="text-sm {$selectedUser?.user_id === u.user_id ? 'text-hazardo-primary font-semibold' : ''}">{u.user_name}</span>
+          <div class="flex items-center gap-1">
+            <button class="p-1 text-hazardo-lightGray hover:text-hazardo-accent" on:click={() => { editingUserId = u.user_id; editingUserName = u.user_name; }}>
+              <Icon name="edit" size={14} />
+            </button>
+            <button class="p-1 text-hazardo-lightGray hover:text-red-500" on:click={() => deleteUser(u.user_id)}>
+              <Icon name="trash" size={14} />
+            </button>
+          </div>
+        {/if}
       </div>
     {/each}
   </div>
 </Modal>
 
 <!-- LLM Settings Modal -->
-<Modal show={activeSection === 'manage-llm'} title="Manage LLM Model (AI)" width="w-96" on:close={() => activeSection = ''}>
+<Modal show={activeSection === 'manage-llm'} title={$t('settings.manage_llm')} width="w-96" on:close={() => activeSection = ''}>
   <form on:submit|preventDefault={saveLlmSettings} class="flex flex-col gap-4">
     <div class="flex flex-col">
-      <FormLabel label="Provider:" />
+      <FormLabel label={$t('llm.provider')} />
       <SelectDropdown options={llmProviderOptions} bind:selected={llmProvider} placeholder="" />
     </div>
     {#if llmProvider === 'openai'}
       <div class="flex flex-col">
-        <FormLabel label="OpenAI API Key:" />
+        <FormLabel label={$t('llm.api_key_openai')} />
         <div class="flex gap-2">
           <div class="flex-1 relative">
-            <FormInput bind:value={llmApiKey} placeholder="sk-..." type="password" />
+            <FormInput bind:value={llmApiKey} placeholder={$t('llm.api_key_ph')} type="password" />
             {#if llmApiKey}
               <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-hazardo-lightGray hover:text-red-500 text-sm" on:click={() => { llmApiKey = ''; llmApiKeys['openai'] = ''; }}>✕</button>
             {/if}
           </div>
           <button type="button" class="px-3 py-1 rounded bg-hazardo-accent text-white text-sm shrink-0 disabled:opacity-50" on:click={testOpenAIConnection} disabled={openaiTestStatus === 'testing' || !llmApiKey.trim()}>
-            {openaiTestStatus === 'testing' ? '...' : 'Test'}
+            {openaiTestStatus === 'testing' ? '...' : $t('llm.test')}
           </button>
         </div>
         {#if openaiTestMsg}
@@ -706,25 +842,25 @@
         {/if}
       </div>
       <div class="flex flex-col">
-        <FormLabel label="Model:" />
+        <FormLabel label={$t('llm.model')} />
         {#if openaiModels.length > 0}
-          <SelectDropdown options={openaiModels} bind:selected={llmModel} placeholder="Select model..." />
+          <SelectDropdown options={openaiModels} bind:selected={llmModel} placeholder={$t('llm.model_ph')} />
         {:else}
           <FormInput bind:value={llmModel} placeholder="gpt-4o-mini" />
         {/if}
       </div>
     {:else if llmProvider === 'gemini'}
       <div class="flex flex-col">
-        <FormLabel label="Gemini API Key:" />
+        <FormLabel label={$t('llm.api_key_gemini')} />
         <div class="flex gap-2">
           <div class="flex-1 relative">
-            <FormInput bind:value={llmApiKey} placeholder="Enter Gemini API key..." type="password" />
+            <FormInput bind:value={llmApiKey} placeholder={$t('llm.api_key_ph')} type="password" />
             {#if llmApiKey}
               <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-hazardo-lightGray hover:text-red-500 text-sm" on:click={() => { llmApiKey = ''; llmApiKeys['gemini'] = ''; }}>✕</button>
             {/if}
           </div>
           <button type="button" class="px-3 py-1 rounded bg-hazardo-accent text-white text-sm shrink-0 disabled:opacity-50" on:click={testGeminiConnection} disabled={geminiTestStatus === 'testing' || !llmApiKey.trim()}>
-            {geminiTestStatus === 'testing' ? '...' : 'Test'}
+            {geminiTestStatus === 'testing' ? '...' : $t('llm.test')}
           </button>
         </div>
         {#if geminiTestMsg}
@@ -732,22 +868,22 @@
         {/if}
       </div>
       <div class="flex flex-col">
-        <FormLabel label="Model:" />
+        <FormLabel label={$t('llm.model')} />
         {#if geminiModels.length > 0}
-          <SelectDropdown options={geminiModels} bind:selected={llmModel} placeholder="Select model..." />
+          <SelectDropdown options={geminiModels} bind:selected={llmModel} placeholder={$t('llm.model_ph')} />
         {:else}
           <FormInput bind:value={llmModel} placeholder="gemini-2.0-flash" />
         {/if}
       </div>
     {:else if llmProvider === 'local'}
       <div class="flex flex-col">
-        <FormLabel label="Endpoint URL:" />
+        <FormLabel label={$t('llm.endpoint')} />
         <div class="flex gap-2">
           <div class="flex-1">
-            <FormInput bind:value={llmEndpoint} placeholder="http://localhost:11434" />
+            <FormInput bind:value={llmEndpoint} placeholder={$t('llm.endpoint_ph')} />
           </div>
           <button type="button" class="px-3 py-1 rounded bg-hazardo-accent text-white text-sm shrink-0 disabled:opacity-50" on:click={testOllamaConnection} disabled={ollamaTestStatus === 'testing'}>
-            {ollamaTestStatus === 'testing' ? '...' : 'Test'}
+            {ollamaTestStatus === 'testing' ? '...' : $t('llm.test')}
           </button>
         </div>
         {#if ollamaTestMsg}
@@ -756,50 +892,50 @@
       </div>
       {#if ollamaModels.length > 0}
         <div class="flex flex-col">
-          <FormLabel label="Model:" />
-          <SelectDropdown options={ollamaModels} bind:selected={llmModel} placeholder="Select model..." />
+          <FormLabel label={$t('llm.model')} />
+          <SelectDropdown options={ollamaModels} bind:selected={llmModel} placeholder={$t('llm.model_ph')} />
         </div>
       {:else}
         <div class="flex flex-col">
-          <FormLabel label="Model (manual):" />
+          <FormLabel label={$t('llm.model_manual')} />
           <FormInput bind:value={llmModel} placeholder="llama3.2" />
         </div>
       {/if}
     {/if}
     <div class="flex flex-col">
-      <FormLabel label="System Prompt:" />
+      <FormLabel label={$t('llm.system_prompt')} />
       <textarea
         bind:value={chatPromptFormat}
-        class="border rounded p-2 border-hazardo-lightGray focus:outline-hazardo-accent w-full text-sm resize-none"
+        class="border rounded p-2 border-hazardo-lightGray focus:outline-hazardo-accent w-full text-sm resize-none bg-hazardo-surface text-hazardo-text"
         rows="4"
       ></textarea>
     </div>
     <label class="flex items-center gap-2 text-sm">
       <input type="checkbox" checked={chatAutoCreate === 'true'} on:change={(e) => chatAutoCreate = e.currentTarget.checked ? 'true' : 'false'} class="w-4 h-4 accent-hazardo-accent" />
-      Allow AI to create items/categories
+      {$t('llm.allow_create')}
     </label>
     <div class="flex justify-end gap-2">
-      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm" on:click={() => activeSection = ''}>Cancel</button>
-      <button type="submit" class="px-4 py-1 rounded bg-hazardo-primary text-white text-sm">Save</button>
+      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm text-hazardo-text" on:click={() => activeSection = ''}>{$t('settings.cancel')}</button>
+      <button type="submit" class="px-4 py-1 rounded bg-hazardo-primary text-white text-sm">{$t('settings.save')}</button>
     </div>
   </form>
 </Modal>
 
 <!-- Recycle Bin Modal -->
-<Modal show={activeSection === 'recycle-bin'} title="Recycle Bin" width="w-96" on:close={() => activeSection = ''}>
+<Modal show={activeSection === 'recycle-bin'} title={$t('settings.recycle_bin')} width="w-96" on:close={() => activeSection = ''}>
   <div class="flex gap-2 mb-3">
     <button
-      class="px-3 py-1 rounded text-sm {recycleBinTab === 'vault' ? 'bg-hazardo-accent text-white' : 'border border-hazardo-lightGray'}"
+      class="px-3 py-1 rounded text-sm {recycleBinTab === 'vault' ? 'bg-hazardo-accent text-white' : 'border border-hazardo-lightGray text-hazardo-text'}"
       on:click={() => recycleBinTab = 'vault'}
-    >Vault</button>
+    >{$t('recycle.vault')}</button>
     <button
-      class="px-3 py-1 rounded text-sm {recycleBinTab === 'categories' ? 'bg-hazardo-accent text-white' : 'border border-hazardo-lightGray'}"
+      class="px-3 py-1 rounded text-sm {recycleBinTab === 'categories' ? 'bg-hazardo-accent text-white' : 'border border-hazardo-lightGray text-hazardo-text'}"
       on:click={() => recycleBinTab = 'categories'}
-    >Categories</button>
+    >{$t('recycle.categories')}</button>
     <button
-      class="px-3 py-1 rounded text-sm {recycleBinTab === 'picked' ? 'bg-hazardo-accent text-white' : 'border border-hazardo-lightGray'}"
+      class="px-3 py-1 rounded text-sm {recycleBinTab === 'picked' ? 'bg-hazardo-accent text-white' : 'border border-hazardo-lightGray text-hazardo-text'}"
       on:click={() => recycleBinTab = 'picked'}
-    >Picked</button>
+    >{$t('recycle.picked')}</button>
   </div>
 
   <div class="mb-3">
@@ -812,10 +948,10 @@
         <div class="flex items-center justify-between py-2 border-b border-hazardo-lightGray/30">
           <span class="text-sm">{item.item_name}</span>
           <div class="flex gap-2">
-            <button class="p-1 text-hazardo-accent hover:text-hazardo-primary" title="Restore" on:click={() => restoreItem(item.item_id)}>
+            <button class="p-1 text-hazardo-accent hover:text-hazardo-primary" title={$t('recycle.restore')} on:click={() => restoreItem(item.item_id)}>
               <Icon name="sync" size={20} />
             </button>
-            <button class="p-1 text-hazardo-lightGray hover:text-red-500" title="Delete permanently" on:click={() => permanentDeleteItem(item.item_id)}>
+            <button class="p-1 text-hazardo-lightGray hover:text-red-500" title={$t('recycle.delete_permanent')} on:click={() => permanentDeleteItem(item.item_id)}>
               <Icon name="trash" size={20} />
             </button>
           </div>
@@ -826,10 +962,10 @@
         <div class="flex items-center justify-between py-2 border-b border-hazardo-lightGray/30">
           <span class="text-sm">{cat.category_name}</span>
           <div class="flex gap-2">
-            <button class="p-1 text-hazardo-accent hover:text-hazardo-primary" title="Restore" on:click={() => restoreCategory(cat.category_id)}>
+            <button class="p-1 text-hazardo-accent hover:text-hazardo-primary" title={$t('recycle.restore')} on:click={() => restoreCategory(cat.category_id)}>
               <Icon name="sync" size={20} />
             </button>
-            <button class="p-1 text-hazardo-lightGray hover:text-red-500" title="Delete permanently" on:click={() => permanentDeleteCategory(cat.category_id)}>
+            <button class="p-1 text-hazardo-lightGray hover:text-red-500" title={$t('recycle.delete_permanent')} on:click={() => permanentDeleteCategory(cat.category_id)}>
               <Icon name="trash" size={20} />
             </button>
           </div>
@@ -845,10 +981,10 @@
             <span class="truncate">{pick.item_name}</span>
           </div>
           <div class="flex gap-2 shrink-0 ml-2">
-            <button class="p-1 text-hazardo-accent hover:text-hazardo-primary" title="Restore" on:click={() => restorePick(pick.pick_id)}>
+            <button class="p-1 text-hazardo-accent hover:text-hazardo-primary" title={$t('recycle.restore')} on:click={() => restorePick(pick.pick_id)}>
               <Icon name="sync" size={20} />
             </button>
-            <button class="p-1 text-hazardo-lightGray hover:text-red-500" title="Delete permanently" on:click={() => permanentDeletePick(pick.pick_id)}>
+            <button class="p-1 text-hazardo-lightGray hover:text-red-500" title={$t('recycle.delete_permanent')} on:click={() => permanentDeletePick(pick.pick_id)}>
               <Icon name="trash" size={20} />
             </button>
           </div>
@@ -859,80 +995,205 @@
 </Modal>
 
 <!-- Documentation Modal -->
-<Modal show={activeSection === 'documentation'} title="Documentation" on:close={() => activeSection = ''}>
-  <div class="text-sm leading-relaxed flex flex-col gap-3">
-    <p><strong>Hazardo</strong> is a random activity picker app. Add items to categories in the Vault, set your preferences, and roll the dice!</p>
-    <p><strong>Home:</strong> Set time, vibe, and category preferences then roll to get a random pick.</p>
-    <p><strong>Vault:</strong> Manage your categories and items. Each item can have time/vibe preferences.</p>
-    <p><strong>Picked:</strong> View your history of all picked activities.</p>
-    <p><strong>ChatBot:</strong> AI-powered assistant (requires LLM configuration in Settings).</p>
-    <p><strong>Advance Roll:</strong> When enabled, the AI provides recommendations alongside your roll.</p>
+<Modal show={activeSection === 'documentation'} title={$t('settings.documentation')} width="w-96" on:close={() => activeSection = ''}>
+  <div class="text-base leading-relaxed flex flex-col gap-2">
+    <p class="text-hazardo-lightGray mb-1">{$t('doc.tap_section')}</p>
+
+    <!-- Home -->
+    <details class="border border-hazardo-lightGray/30 rounded-lg">
+      <summary class="flex items-center gap-2 px-3 py-2 cursor-pointer font-medium">
+        <Icon name="home" size={16} /> {$t('doc.home_title')}
+      </summary>
+      <div class="px-3 pb-3 text-sm text-hazardo-text space-y-1">
+        <p>{$t('doc.home_desc')}</p>
+        <p><strong>{$t('home.time_pref')}</strong> {$t('doc.home_time')}</p>
+        <p><strong>{$t('home.vibe_pref')}</strong> {$t('doc.home_vibe')}</p>
+        <p><strong>{$t('home.list_pref')}</strong> {$t('doc.home_list')}</p>
+        <p><strong>{$t('home.date_pref')}</strong> {$t('doc.home_date')}</p>
+        <p><strong>{$t('home.advance_roll')}:</strong> {$t('doc.home_advance')}</p>
+        <p><strong>{$t('home.roll_dice')}:</strong> {$t('doc.home_roll')}</p>
+        <p><strong>{$t('home.pick_this')}:</strong> {$t('doc.home_pick')}</p>
+        <p><strong>{$t('home.roll_again')}:</strong> {$t('doc.home_roll_again')}</p>
+      </div>
+    </details>
+
+    <!-- Vault -->
+    <details class="border border-hazardo-lightGray/30 rounded-lg">
+      <summary class="flex items-center gap-2 px-3 py-2 cursor-pointer font-medium">
+        <Icon name="vault" size={16} /> {$t('doc.vault_title')}
+      </summary>
+      <div class="px-3 pb-3 text-sm text-hazardo-text space-y-1">
+        <p>{$t('doc.vault_desc')}</p>
+        <p><strong>{$t('recycle.categories')}:</strong> {$t('doc.vault_categories')}</p>
+        <p><strong>{$t('vault.add_category')}:</strong> {$t('doc.vault_create_cat')}</p>
+        <p><strong>{$t('vault.add_item')}:</strong> {$t('doc.vault_add_items')}</p>
+        <ul class="list-disc pl-4">
+          <li><strong>{$t('vault.item_name')}</strong> {$t('doc.vault_item_name')}</li>
+          <li><strong>{$t('vault.time_pref')}</strong> {$t('doc.vault_item_time')}</li>
+          <li><strong>{$t('vault.vibe_pref')}</strong> {$t('doc.vault_item_vibe')}</li>
+          <li><strong>Notes:</strong> {$t('doc.vault_item_notes')}</li>
+        </ul>
+        <p>{$t('doc.vault_edit_delete')}</p>
+      </div>
+    </details>
+
+    <!-- Picked -->
+    <details class="border border-hazardo-lightGray/30 rounded-lg">
+      <summary class="flex items-center gap-2 px-3 py-2 cursor-pointer font-medium">
+        <Icon name="picked" size={16} /> {$t('doc.picked_title')}
+      </summary>
+      <div class="px-3 pb-3 text-sm text-hazardo-text space-y-1">
+        <p>{$t('doc.picked_desc')}</p>
+        <p><strong>{$t('picked.filter')}</strong> {$t('doc.picked_filter')}</p>
+        <p>{$t('doc.picked_detail')}</p>
+        <p><strong>{$t('home.ai_recommendation')}:</strong> {$t('doc.picked_ai')}</p>
+        <p><strong>Notes:</strong> {$t('doc.picked_notes')}</p>
+        <p><strong>Image:</strong> {$t('doc.picked_image')}</p>
+      </div>
+    </details>
+
+    <!-- ChatBot -->
+    <details class="border border-hazardo-lightGray/30 rounded-lg">
+      <summary class="flex items-center gap-2 px-3 py-2 cursor-pointer font-medium">
+        <Icon name="chatbot" size={16} /> {$t('doc.chatbot_title')}
+      </summary>
+      <div class="px-3 pb-3 text-sm text-hazardo-text space-y-1">
+        <p>{$t('doc.chatbot_desc')}</p>
+        <p><strong>{$t('chatbot.settings')}:</strong> {$t('doc.chatbot_requires')}</p>
+        <p>{$t('doc.chatbot_chat')}</p>
+        <p><strong>{$t('chatbot.model')}</strong> {$t('doc.chatbot_model')}</p>
+        <p>{$t('doc.chatbot_auto_create')}</p>
+        <p>{$t('doc.chatbot_clear')}</p>
+      </div>
+    </details>
+
+    <!-- Settings -->
+    <details class="border border-hazardo-lightGray/30 rounded-lg">
+      <summary class="flex items-center gap-2 px-3 py-2 cursor-pointer font-medium">
+        <Icon name="setting" size={16} /> {$t('doc.settings_title')}
+      </summary>
+      <div class="px-3 pb-3 text-sm text-hazardo-text space-y-1">
+        <p><strong>{$t('settings.recycle_bin')}:</strong> {$t('doc.settings_recycle')}</p>
+        <p><strong>{$t('settings.bulk_import')}:</strong> {$t('doc.settings_import')}</p>
+        <p><strong>{$t('settings.bulk_export')}:</strong> {$t('doc.settings_export')}</p>
+        <p><strong>{$t('settings.device_name')}:</strong> {$t('doc.settings_device')}</p>
+        <p><strong>{$t('settings.manage_user')}:</strong> {$t('doc.settings_user')}</p>
+        <p><strong>{$t('settings.manage_sync')}:</strong> {$t('doc.settings_sync')}</p>
+        <p><strong>{$t('settings.location_services')}:</strong> {$t('doc.settings_location')}</p>
+        <p><strong>{$t('settings.manage_llm')}:</strong> {$t('doc.settings_llm')}</p>
+        <ul class="list-disc pl-4">
+          <li><strong>OpenAI:</strong> {$t('doc.settings_llm_openai')}</li>
+          <li><strong>Gemini:</strong> {$t('doc.settings_llm_gemini')}</li>
+          <li><strong>Local LLM:</strong> {$t('doc.settings_llm_local')}</li>
+          <li><strong>{$t('llm.system_prompt')}</strong> {$t('doc.settings_llm_prompt')}</li>
+          <li>{$t('doc.settings_llm_auto')}</li>
+        </ul>
+      </div>
+    </details>
   </div>
 </Modal>
 
 <!-- Theme Modal -->
-<Modal show={activeSection === 'theme'} title="Theme" on:close={() => activeSection = ''}>
-  <p class="text-sm text-hazardo-lightGray">Theme follows your system settings automatically. Custom themes coming soon!</p>
+<Modal show={activeSection === 'theme'} title={$t('settings.theme')} on:close={() => activeSection = ''}>
+  <div class="flex flex-col gap-3">
+    <button
+      class="flex items-center justify-between px-4 py-3 rounded-lg border transition-colors {$currentTheme === 'light' ? 'border-hazardo-accent bg-hazardo-accent/10' : 'border-hazardo-lightGray/30'}"
+      on:click={() => handleThemeChange('light')}
+    >
+      <span class="text-sm font-medium">{$t('settings.theme_light')}</span>
+      {#if $currentTheme === 'light'}
+        <Icon name="check" size={16} />
+      {/if}
+    </button>
+    <button
+      class="flex items-center justify-between px-4 py-3 rounded-lg border transition-colors {$currentTheme === 'dark' ? 'border-hazardo-accent bg-hazardo-accent/10' : 'border-hazardo-lightGray/30'}"
+      on:click={() => handleThemeChange('dark')}
+    >
+      <span class="text-sm font-medium">{$t('settings.theme_dark')}</span>
+      {#if $currentTheme === 'dark'}
+        <Icon name="check" size={16} />
+      {/if}
+    </button>
+  </div>
 </Modal>
 
 <!-- Language Modal -->
-<Modal show={activeSection === 'language'} title="Language" on:close={() => activeSection = ''}>
-  <p class="text-sm text-hazardo-lightGray">Currently only English is supported. More languages coming soon!</p>
+<Modal show={activeSection === 'language'} title={$t('settings.language')} on:close={() => activeSection = ''}>
+  <div class="flex flex-col gap-3">
+    <button
+      class="flex items-center justify-between px-4 py-3 rounded-lg border transition-colors {$currentLang === 'en' ? 'border-hazardo-accent bg-hazardo-accent/10' : 'border-hazardo-lightGray/30'}"
+      on:click={() => handleLanguageChange('en')}
+    >
+      <span class="text-sm font-medium">{$t('settings.english')}</span>
+      {#if $currentLang === 'en'}
+        <Icon name="check" size={16} />
+      {/if}
+    </button>
+    <button
+      class="flex items-center justify-between px-4 py-3 rounded-lg border transition-colors {$currentLang === 'fr' ? 'border-hazardo-accent bg-hazardo-accent/10' : 'border-hazardo-lightGray/30'}"
+      on:click={() => handleLanguageChange('fr')}
+    >
+      <span class="text-sm font-medium">{$t('settings.french')}</span>
+      {#if $currentLang === 'fr'}
+        <Icon name="check" size={16} />
+      {/if}
+    </button>
+  </div>
 </Modal>
 
 <!-- Sync Modal -->
-<Modal show={activeSection === 'manage-sync'} title="Manage Synchronization" on:close={() => activeSection = ''}>
-  <p class="text-sm text-hazardo-lightGray">Synchronization requires the Hazardo desktop API server. Configure and start the Docker container on your network to enable sync.</p>
+<Modal show={activeSection === 'manage-sync'} title={$t('settings.manage_sync')} on:close={() => activeSection = ''}>
+  <p class="text-sm text-hazardo-lightGray">{$t('sync.description')}</p>
 </Modal>
 
 <!-- Location Modal -->
-<Modal show={activeSection === 'manage-location'} title="Location Services" on:close={() => activeSection = ''}>
+<Modal show={activeSection === 'manage-location'} title={$t('settings.location_services')} on:close={() => activeSection = ''}>
   <div class="flex flex-col gap-4">
     <!-- Permission status -->
     <div>
-      <p class="text-sm font-medium mb-2">Location Permission</p>
+      <p class="text-sm font-medium mb-2">{$t('location.permission')}</p>
       {#if locationPermissionStatus === 'granted' || locationEnabled}
         <div class="flex items-center gap-2 text-sm text-green-600">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-          Location access enabled
+          {$t('location.enabled')}
         </div>
       {:else if locationPermissionStatus === 'requesting'}
         <div class="flex items-center gap-2 text-sm text-hazardo-lightGray">
           <div class="w-4 h-4 border-2 border-hazardo-accent border-t-transparent rounded-full animate-spin"></div>
-          Requesting permission...
+          {$t('location.requesting')}
         </div>
       {:else}
         <button type="button" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-hazardo-accent text-white text-sm font-medium" on:click={requestLocationPermission}>
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-          Allow Location Access
+          {$t('location.allow')}
         </button>
         {#if locationPermissionStatus === 'denied'}
-          <p class="text-xs text-red-500 mt-1">Permission denied. You may need to enable it in your device settings.</p>
+          <p class="text-xs text-red-500 mt-1">{$t('location.denied')}</p>
         {/if}
       {/if}
     </div>
 
     <!-- Location override -->
     <div>
-      <p class="text-sm font-medium mb-2">Roll Dice Location</p>
-      <p class="text-xs text-hazardo-lightGray mb-2">Choose a specific location for roll dice, or use your current GPS position.</p>
+      <p class="text-sm font-medium mb-2">{$t('location.roll_dice')}</p>
+      <p class="text-xs text-hazardo-lightGray mb-2">{$t('location.description')}</p>
       {#if locationOverride}
         <div class="flex items-center justify-between bg-hazardo-background/50 rounded-lg px-3 py-2 border border-hazardo-lightGray/30">
           <span class="text-sm">{locationOverride.split('|')[0]}</span>
-          <button type="button" class="text-xs text-red-500 hover:text-red-700" on:click={clearLocationOverride}>Remove</button>
+          <button type="button" class="text-xs text-red-500 hover:text-red-700" on:click={clearLocationOverride}>{$t('location.remove')}</button>
         </div>
       {:else}
         <div class="flex items-center gap-2 text-sm text-hazardo-lightGray mb-2">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          Using current GPS location (default)
+          {$t('location.using_gps')}
         </div>
       {/if}
       <div class="flex gap-2 mt-2">
         <div class="flex-1">
-          <FormInput bind:value={locationSearch} placeholder="Search a city..." on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchLocation(); } }} />
+          <input type="text" bind:value={locationSearch} placeholder={$t('location.search_city')} on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchLocation(); } }} class="border rounded p-2 border-hazardo-lightGray focus:outline-hazardo-accent w-full bg-hazardo-surface text-hazardo-text" />
         </div>
         <button type="button" class="px-3 py-1 rounded bg-hazardo-accent text-white text-sm shrink-0 disabled:opacity-50" disabled={locationSearching || !locationSearch.trim()} on:click={searchLocation}>
-          {locationSearching ? '...' : 'Search'}
+          {locationSearching ? '...' : $t('location.search')}
         </button>
       </div>
       {#if locationSearchResults.length > 0}
@@ -947,57 +1208,59 @@
     </div>
 
     <div class="flex justify-end gap-2">
-      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm" on:click={() => activeSection = ''}>Cancel</button>
-      <button type="button" class="px-4 py-1 rounded bg-hazardo-primary text-white text-sm" on:click={saveLocationSettings}>Save</button>
+      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm text-hazardo-text" on:click={() => activeSection = ''}>{$t('settings.cancel')}</button>
+      <button type="button" class="px-4 py-1 rounded bg-hazardo-primary text-white text-sm" on:click={saveLocationSettings}>{$t('settings.save')}</button>
     </div>
   </div>
 </Modal>
 
 <!-- Import Modal -->
-<Modal show={activeSection === 'bulk-import'} title="Bulk Import" width="w-96" on:close={() => activeSection = ''}>
+<Modal show={activeSection === 'bulk-import'} title={$t('settings.bulk_import')} width="w-96" on:close={() => activeSection = ''}>
   <div class="flex flex-col gap-4">
     <div class="flex flex-col">
-      <FormLabel label="Import Format:" />
+      <FormLabel label={$t('import.format')} />
       <SelectDropdown options={exportFormatOptions} bind:selected={importFormat} placeholder="" />
     </div>
     <div class="flex flex-col">
-      <FormLabel label="File:" />
-      <input type="file" accept=".json,.csv,.md,.txt" class="text-sm" on:change={handleFileSelect} bind:this={importFileInput} />
+      <FormLabel label={$t('import.file')} />
+      <input type="file" accept={importAccept} class="text-sm" on:change={handleFileSelect} bind:this={importFileInput} />
     </div>
     {#if importFileContent}
       <div class="border border-hazardo-lightGray rounded p-2">
-        <p class="text-xs text-hazardo-lightGray mb-1">Preview ({importFileContent.length} chars)</p>
+        <p class="text-xs text-hazardo-lightGray mb-1">{$t('export.preview')} ({importFileContent.length} chars)</p>
         <pre class="text-xs text-hazardo-text max-h-32 overflow-auto whitespace-pre-wrap">{importFileContent.slice(0, 500)}{importFileContent.length > 500 ? '...' : ''}</pre>
       </div>
     {/if}
-    <p class="text-xs text-hazardo-lightGray">Or paste content directly:</p>
+    {#if importFormat !== 'zip'}
+    <p class="text-xs text-hazardo-lightGray">{$t('import.paste')}</p>
     <textarea
       bind:value={importFileContent}
-      placeholder="Paste JSON/CSV/Markdown content..."
-      class="border rounded p-2 border-hazardo-lightGray focus:outline-hazardo-accent w-full text-xs resize-none font-mono"
+      placeholder={$t('import.placeholder')}
+      class="border rounded p-2 border-hazardo-lightGray focus:outline-hazardo-accent w-full text-xs resize-none font-mono bg-hazardo-surface text-hazardo-text"
       rows="4"
     ></textarea>
+    {/if}
     {#if importResult}
       <p class="text-sm {importResult.startsWith('Import error') ? 'text-red-500' : 'text-green-600'}">{importResult}</p>
     {/if}
     <div class="flex justify-end gap-2">
-      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm" on:click={() => activeSection = ''}>Cancel</button>
+      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm text-hazardo-text" on:click={() => activeSection = ''}>{$t('settings.cancel')}</button>
       <button type="button" class="px-4 py-1 rounded bg-hazardo-primary text-white text-sm disabled:opacity-50" disabled={importLoading || !importFileContent.trim()} on:click={handleImport}>
-        {importLoading ? 'Importing...' : 'Import'}
+        {importLoading ? $t('import.importing') : $t('import.import')}
       </button>
     </div>
   </div>
 </Modal>
 
 <!-- Export Modal -->
-<Modal show={activeSection === 'bulk-export'} title="Bulk Export" width="w-96" on:close={() => activeSection = ''}>
+<Modal show={activeSection === 'bulk-export'} title={$t('settings.bulk_export')} width="w-96" on:close={() => activeSection = ''}>
   <div class="flex flex-col gap-4">
     <!-- User selection -->
     <div class="flex flex-col">
-      <FormLabel label="Select Users:" />
+      <FormLabel label={$t('export.select_users')} />
       <label class="flex items-center gap-2 text-sm py-1">
         <input type="checkbox" bind:checked={exportAllUsers} class="w-4 h-4 accent-hazardo-accent" />
-        All Users
+        {$t('export.all_users')}
       </label>
       {#if !exportAllUsers}
         {#each $users as u}
@@ -1011,10 +1274,10 @@
     <!-- Category selection -->
     {#if exportCategories.length > 0}
       <div class="flex flex-col">
-        <FormLabel label="Select Categories:" />
+        <FormLabel label={$t('export.select_categories')} />
         <label class="flex items-center gap-2 text-sm py-1">
           <input type="checkbox" bind:checked={exportAllCategories} class="w-4 h-4 accent-hazardo-accent" />
-          All Categories
+          {$t('export.all_categories')}
         </label>
         {#if !exportAllCategories}
           <div class="max-h-32 overflow-y-auto pl-4">
@@ -1029,21 +1292,41 @@
         {/if}
       </div>
     {/if}
+    <!-- Include picked items -->
+    <div class="flex flex-col">
+      <FormLabel label={$t('export.select_picks')} />
+      <label class="flex items-center gap-2 text-sm py-1">
+        <input type="checkbox" bind:checked={exportIncludePicks} class="w-4 h-4 accent-hazardo-accent" />
+        {$t('export.include_picks')}
+      </label>
+      {#if exportIncludePicks && exportPicks.length > 0}
+        <label class="flex items-center gap-2 text-sm py-1">
+          <input type="checkbox" bind:checked={exportAllPicks} class="w-4 h-4 accent-hazardo-accent" />
+          {$t('export.all_picks')}
+        </label>
+        {#if !exportAllPicks}
+          <div class="max-h-32 overflow-y-auto pl-4">
+            {#each exportPicks as pick}
+              <label class="flex items-center gap-2 text-sm py-1">
+                <input type="checkbox" bind:checked={exportPickSelection[pick.pick_id]} class="w-4 h-4 accent-hazardo-accent" />
+                <Icon name={pick.category_icon} size={14} />
+                <span class="truncate">{pick.item_name} — {pick.pick_date}</span>
+              </label>
+            {/each}
+          </div>
+        {/if}
+      {/if}
+    </div>
     <!-- Format -->
     <div class="flex flex-col">
-      <FormLabel label="Export Format:" />
+      <FormLabel label={$t('export.format')} />
       <SelectDropdown options={exportFormatOptions} bind:selected={exportFormat} placeholder="" />
     </div>
-    <!-- Include picked items -->
-    <label class="flex items-center gap-2 text-sm">
-      <input type="checkbox" checked={true} disabled class="w-4 h-4 accent-hazardo-accent" />
-      Include Picked Items (roll history)
-    </label>
     <!-- Export button -->
     <div class="flex justify-end gap-2">
-      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm" on:click={() => activeSection = ''}>Cancel</button>
+      <button type="button" class="px-4 py-1 rounded border border-hazardo-lightGray text-sm text-hazardo-text" on:click={() => activeSection = ''}>{$t('settings.cancel')}</button>
       <button type="button" class="px-4 py-1 rounded bg-hazardo-primary text-white text-sm disabled:opacity-50" disabled={exportLoading || selectedExportUserIds.length === 0} on:click={handleExport}>
-        {exportLoading ? 'Exporting...' : 'Export'}
+        {exportLoading ? $t('export.exporting') : $t('export.export')}
       </button>
     </div>
     <!-- Export result -->
@@ -1058,7 +1341,7 @@
           </div>
         {:else}
           <div class="flex items-center justify-between mb-1">
-            <p class="text-xs text-hazardo-lightGray">Export Result</p>
+            <p class="text-xs text-hazardo-lightGray">{$t('export.result')}</p>
             <div class="flex gap-2">
               <button class="w-8 h-8 rounded-full bg-hazardo-accent/10 text-hazardo-accent hover:bg-hazardo-accent/20 flex items-center justify-center transition-colors" on:click={copyExportResult} title="Copy">
                 <Icon name="copy" size={16} />

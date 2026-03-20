@@ -8,9 +8,16 @@
 # If your project uses WebView with JS, uncomment the following
 # and specify the fully qualified class name to the JavaScript interface
 # class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+-keepclassmembers class com.hazardo.app.MainActivity$StatusBarBridge {
+   public *;
+}
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
+# Keep GalleryPlugin for Tauri mobile plugin system
+-keep class com.hazardo.app.GalleryPlugin { *; }
+-keep class com.hazardo.app.SaveArgs { *; }
 
 # Uncomment this to preserve the line number information for
 # debugging stack traces.

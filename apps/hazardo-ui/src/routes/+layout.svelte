@@ -3,7 +3,9 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { invoke } from '@tauri-apps/api/core';
-  import { loadUsers } from '../stores/userStore';
+  import { loadUsers, selectedUser } from '../stores/userStore';
+  import { loadThemeSetting } from '../stores/themeStore';
+  import { loadLanguageSetting } from '../stores/i18nStore';
   import AppHeader from '../components/organisms/AppHeader.svelte';
   import BottomNav from '../components/organisms/BottomNav.svelte';
   import Toast from '../components/atoms/Toast.svelte';
@@ -11,6 +13,12 @@
   let ready = false;
 
   $: isSetup = $page.url.pathname.startsWith('/setup');
+
+  // Load theme and language when user changes
+  $: if ($selectedUser) {
+    loadThemeSetting($selectedUser.user_id);
+    loadLanguageSetting($selectedUser.user_id);
+  }
 
   onMount(async () => {
     try {

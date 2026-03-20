@@ -23,7 +23,7 @@
   <div class="relative">
     <button
       type="button"
-      class="w-full flex items-center justify-between border rounded p-2 border-hazardo-lightGray bg-white text-sm text-left"
+      class="w-full flex items-center justify-between border rounded p-2 border-hazardo-lightGray bg-hazardo-surface text-sm text-left"
       on:click={() => open = !open}
     >
       <span class="flex items-center gap-2 truncate">
@@ -41,7 +41,7 @@
       <!-- svelte-ignore a11y-click-events-have-key-events -->
       <!-- svelte-ignore a11y-no-static-element-interactions -->
       <div class="fixed inset-0 z-[55]" on:click={() => open = false}></div>
-      <div class="absolute left-0 right-0 mt-1 bg-white border border-hazardo-lightGray rounded shadow-lg z-[60] max-h-80 overflow-y-auto">
+      <div class="absolute left-0 right-0 mt-1 bg-hazardo-surface border border-hazardo-lightGray rounded shadow-lg z-[60] max-h-80 overflow-y-auto">
         {#each options as opt}
           <button
             type="button"
@@ -61,7 +61,7 @@
   <div class="relative">
     <select
       bind:value={selected}
-      class="w-full appearance-none border rounded p-2 pr-8 border-hazardo-lightGray focus:outline-hazardo-accent bg-white text-sm"
+      class="w-full appearance-none border rounded p-2 pr-8 border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface text-sm"
     >
       {#if placeholder}
         <option value="" disabled>{placeholder}</option>

@@ -1,12 +1,18 @@
 use std::fs;
 use std::sync::Mutex;
-use std::io::{Write as IoWrite, Cursor};
+use std::io::{Read, Write as IoWrite, Cursor};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use base64::Engine;
 
+#[cfg(mobile)]
+use tauri::plugin::PluginHandle;
+
 struct DbState(Mutex<Connection>);
+
+#[cfg(mobile)]
+struct GalleryState<R: tauri::Runtime>(PluginHandle<R>);
 
 // ─── Data Structs ────────────────────────────────────────────
 
@@ -117,6 +123,10 @@ fn create_device(
     device_name: String,
     user_name: Option<String>,
 ) -> Result<(), String> {
+    if device_name.len() > 100 { return Err("Device name too long".into()); }
+    if let Some(ref u) = user_name {
+        if u.len() > 50 { return Err("User name too long".into()); }
+    }
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR IGNORE INTO devices (device_name) VALUES (?1)",
@@ -184,6 +194,8 @@ fn get_users(db: tauri::State<DbState>) -> Result<Vec<User>, String> {
 
 #[tauri::command]
 fn create_user(db: tauri::State<DbState>, user_name: String) -> Result<User, String> {
+    if user_name.trim().is_empty() { return Err("User name cannot be empty".into()); }
+    if user_name.len() > 50 { return Err("User name too long".into()); }
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let device_id: i64 = conn
         .query_row("SELECT device_id FROM devices ORDER BY device_id ASC LIMIT 1", [], |r| r.get(0))
@@ -275,6 +287,8 @@ fn get_categories(db: tauri::State<DbState>, user_id: i64) -> Result<Vec<Categor
 
 #[tauri::command]
 fn create_category(db: tauri::State<DbState>, user_id: i64, category_name: String, category_icon: String) -> Result<Category, String> {
+    if category_name.trim().is_empty() { return Err("Category name cannot be empty".into()); }
+    if category_name.len() > 100 { return Err("Category name too long".into()); }
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO categories (user_id, category_name, category_icon, is_default) VALUES (?1, ?2, ?3, 0)",
@@ -403,6 +417,10 @@ fn create_item(
     description: Option<String>,
     notes: Option<String>,
 ) -> Result<Item, String> {
+    if item_name.trim().is_empty() { return Err("Item name cannot be empty".into()); }
+    if item_name.len() > 200 { return Err("Item name too long".into()); }
+    if description.as_ref().map_or(false, |d| d.len() > 2000) { return Err("Description too long".into()); }
+    if notes.as_ref().map_or(false, |n| n.len() > 5000) { return Err("Notes too long".into()); }
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO items (category_id, user_id, item_name, time_pref, vibe_pref, location, description, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -535,7 +553,8 @@ fn roll_dice(
     let cid = category_id.unwrap_or(0);
     let has_cat = category_id.is_some();
 
-    let cat_filter = if has_cat { "AND i.category_id = ?4" } else { "" };
+    let cat_filter_full = if has_cat { "AND i.category_id = ?4" } else { "" };
+    let cat_filter_simple = if has_cat { "AND i.category_id = ?2" } else { "" };
 
     // Priority 1: Exact match on non-Mixed fields, not picked (items with exactly the chosen pref)
     // Priority 2: Flexible match (exact OR item is Mixed), not picked  
@@ -549,7 +568,7 @@ fn roll_dice(
          {cat}
          AND (?2 = 'Mixed' OR i.time_pref = ?2)
          AND (?3 = 'Mixed' OR i.vibe_pref = ?3)
-         ORDER BY RANDOM() LIMIT 1", cat = cat_filter),
+         ORDER BY RANDOM() LIMIT 1", cat = cat_filter_full),
         // P2: Flexible - item pref matches OR item pref is Mixed
         format!("SELECT i.item_id, i.category_id, i.item_name, c.category_name, c.category_icon, i.time_pref, i.vibe_pref
          FROM items i JOIN categories c ON i.category_id = c.category_id
@@ -557,45 +576,73 @@ fn roll_dice(
          {cat}
          AND (?2 = 'Mixed' OR i.time_pref = ?2 OR i.time_pref = 'Mixed')
          AND (?3 = 'Mixed' OR i.vibe_pref = ?3 OR i.vibe_pref = 'Mixed')
-         ORDER BY RANDOM() LIMIT 1", cat = cat_filter),
+         ORDER BY RANDOM() LIMIT 1", cat = cat_filter_full),
         // P3: Any not-picked in category
         format!("SELECT i.item_id, i.category_id, i.item_name, c.category_name, c.category_icon, i.time_pref, i.vibe_pref
          FROM items i JOIN categories c ON i.category_id = c.category_id
          WHERE i.user_id = ?1 AND i.deleted_at IS NULL AND c.deleted_at IS NULL AND i.is_picked = 0
          {cat}
-         ORDER BY RANDOM() LIMIT 1", cat = cat_filter),
+         ORDER BY RANDOM() LIMIT 1", cat = cat_filter_simple),
         // P4: Any item (including picked)
         format!("SELECT i.item_id, i.category_id, i.item_name, c.category_name, c.category_icon, i.time_pref, i.vibe_pref
          FROM items i JOIN categories c ON i.category_id = c.category_id
          WHERE i.user_id = ?1 AND i.deleted_at IS NULL AND c.deleted_at IS NULL
          {cat}
-         ORDER BY RANDOM() LIMIT 1", cat = cat_filter),
+         ORDER BY RANDOM() LIMIT 1", cat = cat_filter_simple),
     ];
 
-    for sql in &queries {
+    for (i, sql) in queries.iter().enumerate() {
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        let result = if has_cat {
-            stmt.query_row(params![user_id, &time_pref, &vibe_pref, cid], |row| {
-                Ok(Pick {
-                    pick_id: 0, user_id,
-                    item_id: row.get(0)?, category_id: row.get(1)?,
-                    item_name: row.get(2)?, category_name: row.get(3)?,
-                    category_icon: row.get(4)?, pick_date: String::new(),
-                    time_pref: row.get(5)?, vibe_pref: row.get(6)?,
-                    ai_recommendation: None, notes: None, image_path: None, location: None, created_at: String::new(),
+        let result = if i <= 1 {
+            // P1 and P2 use time_pref (?2) and vibe_pref (?3)
+            if has_cat {
+                stmt.query_row(params![user_id, &time_pref, &vibe_pref, cid], |row| {
+                    Ok(Pick {
+                        pick_id: 0, user_id,
+                        item_id: row.get(0)?, category_id: row.get(1)?,
+                        item_name: row.get(2)?, category_name: row.get(3)?,
+                        category_icon: row.get(4)?, pick_date: String::new(),
+                        time_pref: row.get(5)?, vibe_pref: row.get(6)?,
+                        ai_recommendation: None, notes: None, image_path: None, location: None, created_at: String::new(),
+                    })
                 })
-            })
+            } else {
+                stmt.query_row(params![user_id, &time_pref, &vibe_pref], |row| {
+                    Ok(Pick {
+                        pick_id: 0, user_id,
+                        item_id: row.get(0)?, category_id: row.get(1)?,
+                        item_name: row.get(2)?, category_name: row.get(3)?,
+                        category_icon: row.get(4)?, pick_date: String::new(),
+                        time_pref: row.get(5)?, vibe_pref: row.get(6)?,
+                        ai_recommendation: None, notes: None, image_path: None, location: None, created_at: String::new(),
+                    })
+                })
+            }
         } else {
-            stmt.query_row(params![user_id, &time_pref, &vibe_pref], |row| {
-                Ok(Pick {
-                    pick_id: 0, user_id,
-                    item_id: row.get(0)?, category_id: row.get(1)?,
-                    item_name: row.get(2)?, category_name: row.get(3)?,
-                    category_icon: row.get(4)?, pick_date: String::new(),
-                    time_pref: row.get(5)?, vibe_pref: row.get(6)?,
-                    ai_recommendation: None, notes: None, image_path: None, location: None, created_at: String::new(),
+            // P3 and P4 only use user_id (?1) and optionally category_id (?2)
+            if has_cat {
+                stmt.query_row(params![user_id, cid], |row| {
+                    Ok(Pick {
+                        pick_id: 0, user_id,
+                        item_id: row.get(0)?, category_id: row.get(1)?,
+                        item_name: row.get(2)?, category_name: row.get(3)?,
+                        category_icon: row.get(4)?, pick_date: String::new(),
+                        time_pref: row.get(5)?, vibe_pref: row.get(6)?,
+                        ai_recommendation: None, notes: None, image_path: None, location: None, created_at: String::new(),
+                    })
                 })
-            })
+            } else {
+                stmt.query_row(params![user_id], |row| {
+                    Ok(Pick {
+                        pick_id: 0, user_id,
+                        item_id: row.get(0)?, category_id: row.get(1)?,
+                        item_name: row.get(2)?, category_name: row.get(3)?,
+                        category_icon: row.get(4)?, pick_date: String::new(),
+                        time_pref: row.get(5)?, vibe_pref: row.get(6)?,
+                        ai_recommendation: None, notes: None, image_path: None, location: None, created_at: String::new(),
+                    })
+                })
+            }
         };
         match result {
             Ok(p) => return Ok(Some(p)),
@@ -780,11 +827,13 @@ fn export_data(db: tauri::State<DbState>, user_ids: Vec<i64>, category_ids: Vec<
 
 #[tauri::command]
 fn import_data(db: tauri::State<DbState>, user_id: i64, data: String) -> Result<String, String> {
+    if data.len() > 10_000_000 { return Err("Import data too large (max 10MB)".into()); }
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&data).map_err(|e| format!("Invalid JSON: {}", e))?;
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut count = 0u32;
     for user_data in &parsed {
         let cats = user_data.get("categories").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+        if cats.len() > 200 { return Err("Too many categories (max 200)".into()); }
         for cat in &cats {
             let cat_name = cat.get("name").and_then(|n| n.as_str()).unwrap_or("Imported");
             let cat_icon = cat.get("icon").and_then(|i| i.as_str()).unwrap_or("misc");
@@ -815,6 +864,134 @@ fn import_data(db: tauri::State<DbState>, user_id: i64, data: String) -> Result<
 }
 
 #[tauri::command]
+fn import_zip(db: tauri::State<DbState>, user_id: i64, zip_base64: String) -> Result<String, String> {
+    use zip::ZipArchive;
+
+    if zip_base64.len() > 50_000_000 { return Err("ZIP data too large (max ~37MB)".into()); }
+    let zip_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&zip_base64)
+        .map_err(|e| format!("Invalid base64: {}", e))?;
+
+    let mut archive = ZipArchive::new(Cursor::new(zip_bytes))
+        .map_err(|e| format!("Invalid ZIP: {}", e))?;
+
+    // Read data.json from the archive
+    let data_json = {
+        let mut file = archive.by_name("data.json")
+            .map_err(|_| "ZIP does not contain data.json".to_string())?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf).map_err(|e| format!("Read error: {}", e))?;
+        buf
+    };
+
+    // Collect images from the archive
+    let mut images: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+        if name.starts_with("images/") && name.len() > 7 {
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            images.insert(name, buf);
+        }
+    }
+
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&data_json)
+        .map_err(|e| format!("Invalid JSON in data.json: {}", e))?;
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut item_count = 0u32;
+    let mut pick_count = 0u32;
+
+    for user_data in &parsed {
+        // Import categories + items
+        let cats = user_data.get("categories").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+        if cats.len() > 200 { return Err("Too many categories (max 200)".into()); }
+        for cat in &cats {
+            let cat_name = cat.get("name").and_then(|n| n.as_str()).unwrap_or("Imported");
+            let cat_icon = cat.get("icon").and_then(|i| i.as_str()).unwrap_or("misc");
+            let existing_cid: Option<i64> = conn.query_row(
+                "SELECT category_id FROM categories WHERE user_id = ?1 AND category_name = ?2 AND deleted_at IS NULL",
+                params![user_id, cat_name], |row| row.get(0),
+            ).ok();
+            let cid = if let Some(id) = existing_cid { id } else {
+                conn.execute("INSERT INTO categories (user_id, category_name, category_icon, is_default) VALUES (?1, ?2, ?3, 0)",
+                    params![user_id, cat_name, cat_icon]).map_err(|e| e.to_string())?;
+                conn.last_insert_rowid()
+            };
+            let items = cat.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default();
+            for item in &items {
+                let iname = item.get("name").and_then(|n| n.as_str()).unwrap_or("Unnamed");
+                let tp = item.get("time_pref").and_then(|n| n.as_str()).unwrap_or("Mixed");
+                let vp = item.get("vibe_pref").and_then(|n| n.as_str()).unwrap_or("Mixed");
+                let notes = item.get("notes").and_then(|n| n.as_str());
+                conn.execute("INSERT INTO items (category_id, user_id, item_name, time_pref, vibe_pref, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![cid, user_id, iname, tp, vp, notes]).map_err(|e| e.to_string())?;
+                item_count += 1;
+            }
+        }
+
+        // Import picks with images
+        let picks = user_data.get("picks").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+        for pick in &picks {
+            let item_name = pick.get("item_name").and_then(|n| n.as_str()).unwrap_or_default();
+            let cat_name = pick.get("category_name").and_then(|n| n.as_str()).unwrap_or_default();
+            let pick_date = pick.get("pick_date").and_then(|n| n.as_str()).unwrap_or_default();
+            let time_pref = pick.get("time_pref").and_then(|n| n.as_str());
+            let vibe_pref = pick.get("vibe_pref").and_then(|n| n.as_str());
+            let notes = pick.get("notes").and_then(|n| n.as_str());
+            let ai_rec = pick.get("ai_recommendation").and_then(|n| n.as_str());
+            let location = pick.get("location").and_then(|n| n.as_str());
+
+            // Find matching item and category
+            let cat_id: Option<i64> = conn.query_row(
+                "SELECT category_id FROM categories WHERE user_id = ?1 AND category_name = ?2 AND deleted_at IS NULL",
+                params![user_id, cat_name], |row| row.get(0),
+            ).ok();
+            let cat_id = match cat_id {
+                Some(id) => id,
+                None => continue,
+            };
+            let item_id: Option<i64> = conn.query_row(
+                "SELECT item_id FROM items WHERE category_id = ?1 AND item_name = ?2 AND deleted_at IS NULL",
+                params![cat_id, item_name], |row| row.get(0),
+            ).ok();
+            let item_id = match item_id {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Reconstruct image data URI from zip image file
+            let image_data = pick.get("image_file").and_then(|f| f.as_str()).and_then(|fname| {
+                images.get(fname).map(|bytes| {
+                    let ext = fname.rsplit('.').next().unwrap_or("jpg");
+                    let mime = match ext {
+                        "png" => "image/png",
+                        "gif" => "image/gif",
+                        "webp" => "image/webp",
+                        _ => "image/jpeg",
+                    };
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    format!("data:{};base64,{}", mime, b64)
+                })
+            });
+
+            conn.execute(
+                "INSERT INTO picks (user_id, item_id, category_id, pick_date, time_pref, vibe_pref, notes, image_path, ai_recommendation, location) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![user_id, item_id, cat_id, pick_date, time_pref, vibe_pref, notes, image_data, ai_rec, location],
+            ).map_err(|e| e.to_string())?;
+            pick_count += 1;
+        }
+    }
+
+    let msg = if pick_count > 0 {
+        format!("Imported {} items and {} picks successfully", item_count, pick_count)
+    } else {
+        format!("Imported {} items successfully", item_count)
+    };
+    Ok(msg)
+}
+
+#[tauri::command]
 fn update_pick(
     db: tauri::State<DbState>,
     pick_id: i64,
@@ -833,14 +1010,75 @@ fn update_pick(
 // ─── Export File Commands ─────────────────────────────────────
 
 #[tauri::command]
-fn read_file_bytes(path: String) -> Result<String, String> {
+fn save_to_gallery(app: tauri::AppHandle, base64_data: String, filename: String) -> Result<String, String> {
     use base64::Engine;
-    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+
+    // Strip data URI prefix if present
+    let pure = if let Some(pos) = base64_data.find(',') {
+        &base64_data[pos + 1..]
+    } else {
+        &base64_data
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(pure)
+        .map_err(|e| format!("Base64 decode error: {}", e))?;
+
+    // Detect extension from data URI
+    let ext = if base64_data.starts_with("data:image/png") {
+        ".png"
+    } else if base64_data.starts_with("data:image/webp") {
+        ".webp"
+    } else if base64_data.starts_with("data:image/gif") {
+        ".gif"
+    } else {
+        ".jpg"
+    };
+    let final_filename = if filename.contains('.') {
+        filename.clone()
+    } else {
+        format!("{}{}", filename, ext)
+    };
+
+    // Write to app cache dir (always writable on all Android versions)
+    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&cache_dir).map_err(|e| format!("Create dir error: {}", e))?;
+    let path = cache_dir.join(&final_filename);
+    fs::write(&path, &bytes).map_err(|e| format!("Write error: {}", e))?;
+    let path_str = path.to_string_lossy().to_string();
+
+    // On mobile, call the GalleryPlugin to save to DCIM via MediaStore
+    #[cfg(mobile)]
+    {
+        let handle = app.state::<GalleryState<tauri::Wry>>();
+        handle.0.run_mobile_plugin::<()>("saveToGallery", serde_json::json!({ "path": path_str }))
+            .map_err(|e| format!("Gallery plugin error: {}", e))?;
+        return Ok("ok".to_string());
+    }
+
+    #[cfg(not(mobile))]
+    Ok(path_str)
+}
+
+#[tauri::command]
+fn read_file_bytes(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    use base64::Engine;
+    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    if !canonical.starts_with(&cache_dir) && !canonical.starts_with(&data_dir) {
+        return Err("Access denied: path outside app directory".into());
+    }
+    let bytes = fs::read(&canonical).map_err(|e| e.to_string())?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
 #[tauri::command]
 fn save_export_file(app: tauri::AppHandle, content: String, filename: String, target: Option<String>) -> Result<String, String> {
+    let safe_name = std::path::Path::new(&filename)
+        .file_name()
+        .ok_or("Invalid filename")?
+        .to_string_lossy()
+        .to_string();
     let dir = match target.as_deref() {
         Some("downloads") => {
             let dl = std::path::PathBuf::from("/storage/emulated/0/Download");
@@ -849,7 +1087,7 @@ fn save_export_file(app: tauri::AppHandle, content: String, filename: String, ta
         _ => app.path().app_cache_dir().map_err(|e| e.to_string())?,
     };
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(&filename);
+    let path = dir.join(&safe_name);
     fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
 }
@@ -1085,11 +1323,20 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
+        .plugin({
+            let builder = tauri::plugin::Builder::<tauri::Wry, ()>::new("gallery");
+            #[cfg(mobile)]
+            let builder = builder.setup(|app, api| {
+                let handle = api.register_android_plugin("com.hazardo.app", "GalleryPlugin")?;
+                app.manage(GalleryState(handle));
+                Ok(())
+            });
+            builder.build()
+        })
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("hazardo.db");
-            println!("Opening DB at: {:?}", db_path);
 
             let conn = Connection::open(&db_path)?;
 
@@ -1174,15 +1421,24 @@ pub fn run() {
 
             app.manage(DbState(Mutex::new(conn)));
 
-            // Migrations: add columns for existing databases (ignore errors if already present)
+            // Migrations: add columns for existing databases
             {
                 let db = app.state::<DbState>();
                 let conn = db.0.lock().unwrap();
-                let _ = conn.execute_batch("ALTER TABLE picks ADD COLUMN notes TEXT;");
-                let _ = conn.execute_batch("ALTER TABLE picks ADD COLUMN image_path TEXT;");
-                let _ = conn.execute_batch("ALTER TABLE picks ADD COLUMN deleted_at TEXT;");
-                let _ = conn.execute_batch("ALTER TABLE items ADD COLUMN is_picked INTEGER DEFAULT 0;");
-                let _ = conn.execute_batch("ALTER TABLE picks ADD COLUMN location TEXT;");
+                let migrations = [
+                    "ALTER TABLE picks ADD COLUMN notes TEXT;",
+                    "ALTER TABLE picks ADD COLUMN image_path TEXT;",
+                    "ALTER TABLE picks ADD COLUMN deleted_at TEXT;",
+                    "ALTER TABLE items ADD COLUMN is_picked INTEGER DEFAULT 0;",
+                    "ALTER TABLE picks ADD COLUMN location TEXT;",
+                ];
+                for sql in &migrations {
+                    match conn.execute_batch(sql) {
+                        Ok(_) => {},
+                        Err(e) if e.to_string().contains("duplicate column") => {},
+                        Err(e) => return Err(Box::new(e)),
+                    }
+                }
             }
 
             Ok(())
@@ -1202,7 +1458,8 @@ pub fn run() {
             roll_dice, create_pick, get_picks, delete_pick, update_pick,
             get_deleted_picks, restore_pick, permanent_delete_pick,
             // Export / Import
-            export_data, import_data, save_export_file, export_zip, read_file_bytes,
+            export_data, import_data, import_zip, save_export_file, export_zip, read_file_bytes,
+            save_to_gallery,
             // Settings
             get_all_settings, get_setting, set_setting,
             // Chat

@@ -23,20 +23,49 @@
   --font-display: "Outfit", ui-sans-serif, system-ui;
   --font-body: "Inter", ui-sans-serif, system-ui;
 
-  /* Couleurs Hazardo (Deviennent class="bg-hazardo-primary", etc.) */
+  /* Couleurs Hazardo Light (défaut) */
   --color-hazardo-primary: #8e58be;
   --color-hazardo-secondary: #c199e4;
   --color-hazardo-background: #f8f6fa;
   --color-hazardo-text: #0f0c10;
   --color-hazardo-accent: #a65de6;
   --color-hazardo-lightGray: #cbd5e1;
+  --color-hazardo-surface: #ffffff;
 }
 
-/* 3. Styles de base (Appliqués automatiquement) */
+/* 3. Dark Theme Override */
+:root.dark {
+  --color-hazardo-primary: #7640a5;
+  --color-hazardo-secondary: #421b65;
+  --color-hazardo-background: #08050a;
+  --color-hazardo-text: #f3f0f4;
+  --color-hazardo-accent: #6319a3;
+  --color-hazardo-lightGray: #4a4a5a;
+  --color-hazardo-surface: #130e18;
+}
+
+/* 4. Styles de base (Appliqués automatiquement) */
 @layer base {
   body {
     @apply antialiased text-hazardo-text bg-hazardo-background;
     font-family: var(--font-body);
+  }
+
+  /* Light strip behind status bar in dark mode so dark icons remain visible */
+  body::before {
+    content: "";
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: env(safe-area-inset-top, 0px);
+    background: #f8f6fa;
+    z-index: 9999;
+    pointer-events: none;
+  }
+  :root.dark body::before {
+    display: block;
   }
 
   h1,
@@ -46,5 +75,11 @@
   .title-font {
     font-family: var(--font-display);
     @apply font-bold text-2xl;
+  }
+
+  .md-link {
+    color: var(--color-hazardo-accent);
+    text-decoration: underline;
+    cursor: pointer;
   }
 }

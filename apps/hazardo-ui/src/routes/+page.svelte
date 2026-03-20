@@ -2,28 +2,25 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-  import { openUrl } from '@tauri-apps/plugin-opener';
-  import { marked } from 'marked';
+  import { handleMarkdownClick } from '$lib/markdown';
   import { selectedUser } from '../stores/userStore';
+  import { t, currentLang, formatDateLocalized } from '../stores/i18nStore';
+  import { get } from 'svelte/store';
+  import { renderMarkdown } from '$lib/markdown';
+  import { TIME_OPTIONS, VIBE_OPTIONS } from '$lib/constants';
   import Title from '../components/atoms/Title.svelte';
   import FormLabel from '../components/atoms/FormLabel.svelte';
   import Icon from '../components/atoms/Icon.svelte';
   import OptionToggle from '../components/molecules/OptionToggle.svelte';
   import SelectDropdown from '../components/molecules/SelectDropdown.svelte';
   import Modal from '../components/organisms/Modal.svelte';
+  import { showToast } from '../stores/toastStore';
   import type { Category, Pick as PickType, AppSetting } from '$lib/types';
 
-  marked.setOptions({ breaks: true, gfm: true });
+  // marked is configured globally by $lib/markdown
 
-  const renderer = new marked.Renderer();
-  renderer.link = function ({ href, title, text }: { href: string; title?: string | null | undefined; text: string }) {
-    const titleAttr = title ? ` title="${title}"` : '';
-    return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
-  };
-  marked.use({ renderer });
-
-  const timeOptions = ['AM', 'PM', 'Night', 'Mixed'];
-  const vibeOptions = ['Friend', 'Date', 'Family', 'Mixed'];
+  const timeOptions = [...TIME_OPTIONS];
+  const vibeOptions = [...VIBE_OPTIONS];
 
   let selectedTime = 'Mixed';
   let selectedVibe = 'Mixed';
@@ -37,6 +34,38 @@
 
   let showResult = false;
   let rollResult: PickType | null = null;
+
+  // Persist modal state across app background/resume
+  function saveModalState() {
+    if (showResult && rollResult) {
+      sessionStorage.setItem('hazardo_pick_modal', JSON.stringify({ rollResult, aiRecommendation }));
+    } else {
+      sessionStorage.removeItem('hazardo_pick_modal');
+    }
+  }
+
+  function restoreModalState() {
+    try {
+      const saved = sessionStorage.getItem('hazardo_pick_modal');
+      if (saved) {
+        const data = JSON.parse(saved);
+        rollResult = data.rollResult;
+        aiRecommendation = data.aiRecommendation || '';
+        showResult = true;
+      }
+    } catch (_) {}
+  }
+
+  $: if (showResult || rollResult || aiRecommendation) saveModalState();
+
+  // Only clear sessionStorage when user explicitly dismisses the modal
+  // (not on initial component mount where showResult starts as false)
+  let modalWasShown = false;
+  $: if (showResult) modalWasShown = true;
+  $: if (!showResult && modalWasShown) {
+    sessionStorage.removeItem('hazardo_pick_modal');
+    modalWasShown = false;
+  }
 
   // Weather & Location
   let userLat: number | null = null;
@@ -54,7 +83,8 @@
   let llmModel = '';
   let aiLoading = false;
   let aiRecommendation = '';
-  let locationEnabled = false;
+  let aiRequestId = 0;
+  let locationEnabled = true;
   let locationOverride = '';
 
   $: if ($selectedUser) {
@@ -64,22 +94,29 @@
   }
 
   onMount(() => {
-    // Intercept link clicks in markdown content to open in external browser
-    document.addEventListener('click', (e) => {
-      const target = e.target as HTMLElement;
-      const anchor = target.closest('a[href]') as HTMLAnchorElement | null;
-      if (anchor && anchor.href && (anchor.href.startsWith('http://') || anchor.href.startsWith('https://'))) {
-        e.preventDefault();
-        openUrl(anchor.href);
+    // Restore modal state if app was in background
+    restoreModalState();
+
+    // Restore modal when returning from another app (e.g. Google Maps)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !showResult) {
+        restoreModalState();
       }
-    });
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   });
 
   async function loadLocationSetting(userId: number) {
     try {
       const settings = await invoke<AppSetting[]>('get_all_settings', { userId });
       const map = new Map(settings.map(s => [s.setting_key, s.setting_value]));
-      locationEnabled = map.get('location_enabled') === 'true';
+      const locationSetting = map.get('location_enabled');
+      // Default to true (use GPS) if the setting hasn't been configured yet
+      locationEnabled = locationSetting !== 'false';
       locationOverride = map.get('location_override') || '';
 
       if (locationOverride) {
@@ -96,28 +133,49 @@
         requestLocation();
       }
     } catch (_) {
-      // setting may not exist yet
+      // setting may not exist yet — use GPS by default
+      locationEnabled = true;
+      requestLocation();
     }
   }
 
   function requestLocation() {
     if (!navigator.geolocation) {
-      locationError = 'Geolocation not supported';
+      fallbackIpLocation();
       return;
     }
+    // Try fast cached position first, then accurate position
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         userLat = pos.coords.latitude;
         userLon = pos.coords.longitude;
         locationError = '';
-        await fetchWeather(userLat, userLon);
         await reverseGeocode(userLat, userLon);
+        await fetchWeather(userLat, userLon);
       },
-      (err) => {
-        locationError = err.message || 'Location denied';
+      () => {
+        // GPS failed or denied — try IP-based fallback
+        fallbackIpLocation();
       },
-      { enableHighAccuracy: false, timeout: 10000 }
+      { enableHighAccuracy: false, timeout: 3000, maximumAge: 300000 }
     );
+  }
+
+  async function fallbackIpLocation() {
+    try {
+      const resp = await tauriFetch('https://ipwho.is/', { method: 'GET' });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.success !== false && data.latitude && data.longitude) {
+        userLat = data.latitude;
+        userLon = data.longitude;
+        locationName = data.city || data.region || '';
+        locationError = '';
+        await fetchWeather(data.latitude, data.longitude);
+      }
+    } catch (_) {
+      locationError = 'Location unavailable';
+    }
   }
 
   async function fetchWeather(lat: number, lon: number) {
@@ -177,14 +235,20 @@
   async function loadCategories(userId: number) {
     try {
       categories = await invoke<Category[]>('get_categories', { userId });
-      categoryOptions = [
-        { value: '', label: 'All Lists', icon: '' },
-        ...categories.map(c => ({ value: String(c.category_id), label: c.category_name, icon: c.category_icon }))
-      ];
+      updateCategoryOptions();
     } catch (e) {
       console.error('get_categories failed', e);
     }
   }
+
+  function updateCategoryOptions() {
+    categoryOptions = [
+      { value: '', label: $t('home.all_lists'), icon: '' },
+      ...categories.map(c => ({ value: String(c.category_id), label: c.category_name, icon: c.category_icon }))
+    ];
+  }
+
+  $: if ($currentLang && categories) updateCategoryOptions();
 
   async function handleRoll() {
     if (!$selectedUser) return;
@@ -198,19 +262,27 @@
         categoryId: selectedCategoryId ? Number(selectedCategoryId) : null,
       });
       rollResult = result;
+      if (!result) {
+        showToast($t('home.no_items'), 'error');
+        rolling = false;
+        return;
+      }
       showResult = true;
 
       // If advance roll enabled and LLM configured, get AI recommendation
       if (advanceRoll && result && llmProvider) {
         getAdvanceRecommendation(result);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('roll_dice failed', e);
+      const msg = typeof e === 'string' ? e : e?.message || $t('home.roll_error');
+      showToast(msg, 'error');
     }
     rolling = false;
   }
 
   async function getAdvanceRecommendation(pick: PickType) {
+    const currentRequestId = ++aiRequestId;
     aiLoading = true;
     try {
       const weatherInfo = weatherTemp !== null
@@ -222,50 +294,46 @@
           ? `User coordinates: lat ${userLat}, lon ${userLon}.`
           : 'Location not available.';
 
-      const systemPrompt = `You are Hazardo, a smart activity recommendation AI. The user just rolled a random activity pick. You MUST provide a LONG, DETAILED, and COMPREHENSIVE recommendation. Do NOT be brief. Write at least 300 words.
+      const langInstruction = $t('ai.respond_instruction');
+
+      const tr = get(t);
+
+      const systemPrompt = `${tr('ai.system_prompt')}
 
 ${locationInfo}
 ${weatherInfo}
 
-You MUST follow this exact format with ALL sections filled out in detail:
+${langInstruction}
 
-## Quick Take
-One paragraph (3-4 sentences) summarizing your recommendation and why it's a great choice given the weather, time, and vibe.
+Use this format:
 
-## Top Picks Near You
-List AT LEAST 5 real, specific places near the user's location relevant to the activity. For EACH place include:
-- **Place Name** — A 2-3 sentence description of why it's great, what to expect, price range if relevant
-- [Get Directions on Google Maps](https://www.google.com/maps/dir/?api=1&destination=PLACE+NAME+CITY)
-- [Search on Google](https://www.google.com/search?q=PLACE+NAME+CITY)
+## ${tr('ai.format_quick_take')}
+${tr('ai.format_quick_take_desc')}
 
-## Pro Tips
-Give 4-5 detailed, practical tips based on weather, time of day, vibe, and the specific activity. Each tip should be 1-2 sentences.
+## ${tr('ai.format_top_picks')}
+${tr('ai.format_top_picks_desc')}
+- ${tr('ai.format_top_picks_item')}
+- ${tr('ai.format_top_picks_links')}
 
-## What to Bring
-List 3-5 items the user should bring or prepare for this activity, based on weather and context.
+## ${tr('ai.format_pro_tips')}
+${tr('ai.format_pro_tips_desc')}
 
-## Alternative Ideas
-Suggest 3 backup activities in case this one doesn't work out, each with a one-sentence explanation.
+## ${tr('ai.format_what_to_bring')}
+${tr('ai.format_what_to_bring_desc')}
 
-CRITICAL RULES:
-- You MUST write a LONG and DETAILED response — at least 300 words total.
-- If the category is restaurant/food: suggest 5+ specific restaurants with cuisine types, price ranges, and popular dishes.
-- If it's outdoor (hiking, cycling, etc.): suggest 5+ parks, trails, or spots with difficulty level and distance.
-- If it's a gift: suggest 5+ stores and also 3+ specific gift ideas with price ranges.
-- If it's a board game/indoor activity: suggest 5+ cafes, game stores, or venues with specialties.
-- If weather is bad (rain, snow, cold below 5°C): prioritize indoor alternatives and explain why.
-- ALL place names must be REAL places in or near the user's actual city.
-- ALL Google Maps links must use the exact format shown above with + for spaces.
-- Use markdown headers (##), bold (**), bullet points (-), and links throughout.
-- Do NOT give generic or vague advice. Be hyper-specific to the user's city and situation.
-- NEVER cut your response short. Complete ALL sections fully.`;
+## ${tr('ai.format_alternative_ideas')}
+${tr('ai.format_alternative_desc')}
 
-      const userMsg = `I just rolled: **${pick.item_name}** (category: ${pick.category_name}, time: ${pick.time_pref}, vibe: ${pick.vibe_pref}). What do you recommend?`;
+${tr('ai.format_rules')}`;
+
+      const userMsg = `${tr('ai.user_msg_prefix')} **${pick.item_name}** (category: ${pick.category_name}, time: ${pick.time_pref}, vibe: ${pick.vibe_pref}). ${tr('ai.user_msg_suffix')}`;
 
       aiRecommendation = await callLlm(systemPrompt, userMsg);
     } catch (e: any) {
+      if (currentRequestId !== aiRequestId) return;
       aiRecommendation = `AI error: ${e.message || e}`;
     }
+    if (currentRequestId !== aiRequestId) return;
     aiLoading = false;
   }
 
@@ -318,20 +386,6 @@ CRITICAL RULES:
     return data.choices?.[0]?.message?.content || 'No response from AI.';
   }
 
-  function sanitizeHtml(html: string): string {
-    return html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '')
-      .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
-      .replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '')
-      .replace(/<embed\b[^>]*>/gi, '');
-  }
-
-  function renderMarkdown(content: string): string {
-    const html = marked.parse(content) as string;
-    return sanitizeHtml(html);
-  }
-
   async function handlePickThis() {
     if (!rollResult || !$selectedUser) return;
     try {
@@ -354,9 +408,11 @@ CRITICAL RULES:
   }
 
   function handleRollAgain() {
+    aiRequestId++;
     showResult = false;
     rollResult = null;
     aiRecommendation = '';
+    aiLoading = false;
     handleRoll();
   }
 </script>
@@ -364,13 +420,13 @@ CRITICAL RULES:
 <main class="max-w-lg mx-auto px-4">
   <div class="flex flex-col items-center">
     <div class="mt-6 mb-8 bg-hazardo-accent px-2 rounded">
-      <Title title="Select Criteria" />
+      <Title title={$t('home.title')} />
     </div>
 
     <div class="w-full max-w-78 flex flex-col gap-6">
       <!-- Time Preference -->
       <div>
-        <FormLabel label="Time Preference:" />
+        <FormLabel label={$t('home.time_pref')} />
         <div class="mt-2">
           <OptionToggle options={timeOptions} bind:selected={selectedTime} />
         </div>
@@ -378,7 +434,7 @@ CRITICAL RULES:
 
       <!-- Vibe Preference -->
       <div>
-        <FormLabel label="Vibe Preference:" />
+        <FormLabel label={$t('home.vibe_pref')} />
         <div class="mt-2">
           <OptionToggle options={vibeOptions} bind:selected={selectedVibe} />
         </div>
@@ -386,7 +442,7 @@ CRITICAL RULES:
 
       <!-- List Preference -->
       <div>
-        <FormLabel label="List Preference:" />
+        <FormLabel label={$t('home.list_pref')} />
         <div class="mt-2">
           <SelectDropdown
             options={categoryOptions}
@@ -398,12 +454,12 @@ CRITICAL RULES:
 
       <!-- Date Preference -->
       <div>
-        <FormLabel label="Date Preference:" />
+        <FormLabel label={$t('home.date_pref')} />
         <div class="relative mt-2">
           <input
             type="date"
             bind:value={selectedDate}
-            class="w-full border rounded p-2 pr-8 border-hazardo-lightGray focus:outline-hazardo-accent bg-white"
+            class="w-full border rounded p-2 pr-8 border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface"
           />
         </div>
       </div>
@@ -411,7 +467,7 @@ CRITICAL RULES:
       <!-- Advance Roll -->
       <label class="flex items-center gap-2 text-sm">
         <input type="checkbox" bind:checked={advanceRoll} class="w-4 h-4 accent-hazardo-accent" />
-        Advance Roll (need AI setting to work)
+        {$t('home.advance_roll')}
       </label>
 
       <!-- Roll Dice -->
@@ -421,7 +477,7 @@ CRITICAL RULES:
           on:click={handleRoll}
           disabled={rolling || !$selectedUser}
         >
-          {rolling ? 'Rolling...' : 'Roll Dice'}
+          {rolling ? $t('home.rolling') : $t('home.roll_dice')}
         </button>
       </div>
     </div>
@@ -429,21 +485,21 @@ CRITICAL RULES:
 </main>
 
 <!-- Roll Result Modal -->
-<Modal bind:show={showResult} title="Hazardo Pick" width="w-96">
+<Modal bind:show={showResult} title={$t('home.hazardo_pick')} width="w-96">
   {#if rollResult}
     <div class="flex flex-col gap-4">
-      <p class="text-sm text-hazardo-text">Date: {selectedDate}</p>
+      <p class="text-sm text-hazardo-text">{$t('home.date')} {formatDateLocalized(selectedDate, $currentLang)}</p>
 
       <div class="grid grid-cols-2 gap-3">
         <div class="border border-hazardo-lightGray rounded p-3 text-center">
           <div class="flex items-center justify-center gap-1 text-sm text-hazardo-text mb-1">
-            <Icon name="clock" size={14} /> Time
+            <Icon name="clock" size={14} /> {$t('home.time')}
           </div>
           <p class="font-semibold">{rollResult.time_pref}</p>
         </div>
         <div class="border border-hazardo-lightGray rounded p-3 text-center">
           <div class="flex items-center justify-center gap-1 text-sm text-hazardo-text mb-1">
-            <Icon name="users" size={14} /> Vibe
+            <Icon name="users" size={14} /> {$t('home.vibe')}
           </div>
           <p class="font-semibold">{rollResult.vibe_pref}</p>
         </div>
@@ -458,17 +514,17 @@ CRITICAL RULES:
         </div>
         <div class="border border-hazardo-lightGray rounded p-3 text-center">
           <div class="flex items-center justify-center gap-1 text-sm text-hazardo-text mb-1">
-            <Icon name="map-pin" size={14} /> {locationName || 'Location'}
+            <Icon name="map-pin" size={14} /> {locationName || $t('home.location')}
           </div>
           {#if locationName}
             <p class="font-semibold">{weatherTemp !== null ? `${weatherTemp}°C` : ''}</p>
             <p class="text-xs text-hazardo-lightGray">{weatherDesc || ''}</p>
           {:else if weatherLoading}
-            <p class="text-xs text-hazardo-lightGray">Loading...</p>
+            <p class="text-xs text-hazardo-lightGray">{$t('home.loading')}</p>
           {:else if !locationEnabled}
-            <p class="text-xs text-hazardo-lightGray">Disabled</p>
+            <p class="text-xs text-hazardo-lightGray">{$t('home.disabled')}</p>
           {:else}
-            <p class="text-xs text-hazardo-lightGray">N/A</p>
+            <p class="text-xs text-hazardo-lightGray">{$t('home.na')}</p>
           {/if}
         </div>
       </div>
@@ -476,37 +532,38 @@ CRITICAL RULES:
       {#if aiLoading}
         <div class="border border-hazardo-lightGray rounded p-3">
           <div class="flex items-center gap-1 text-sm text-hazardo-text mb-1">
-            <Icon name="chatbot" size={14} /> AI Recommendation
+            <Icon name="chatbot" size={14} /> {$t('home.ai_recommendation')}
           </div>
-          <p class="text-sm text-hazardo-lightGray animate-pulse">Thinking...</p>
+          <p class="text-sm text-hazardo-lightGray animate-pulse">{$t('home.thinking')}</p>
         </div>
       {:else if aiRecommendation}
         <div class="border border-hazardo-lightGray rounded p-3">
           <div class="flex items-center gap-1 text-sm text-hazardo-text mb-2">
-            <Icon name="chatbot" size={14} /> AI Recommendation
+            <Icon name="chatbot" size={14} /> {$t('home.ai_recommendation')}
           </div>
-          <div class="text-sm markdown-content max-h-72 overflow-y-auto">{@html renderMarkdown(aiRecommendation)}</div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <div class="text-sm markdown-content max-h-72 overflow-y-auto" on:click={handleMarkdownClick}>{@html renderMarkdown(aiRecommendation)}</div>
         </div>
       {:else if rollResult.ai_recommendation}
         <div class="border border-hazardo-lightGray rounded p-3">
           <div class="flex items-center gap-1 text-sm text-hazardo-text mb-1">
-            <Icon name="chatbot" size={14} /> AI Recommendation
+            <Icon name="chatbot" size={14} /> {$t('home.ai_recommendation')}
           </div>
           <p class="text-sm">{rollResult.ai_recommendation}</p>
         </div>
       {/if}
 
       <div class="flex items-center justify-center gap-4 mt-2">
-        <button class="text-sm text-hazardo-text hover:text-hazardo-primary" on:click={handleRollAgain}>Roll Again</button>
-        <button class="bg-hazardo-primary text-white py-2 px-6 rounded title-font text-sm" on:click={handlePickThis}>Pick this!</button>
+        <button class="text-sm text-hazardo-text hover:text-hazardo-primary" on:click={handleRollAgain}>{$t('home.roll_again')}</button>
+        <button class="bg-hazardo-primary text-white py-2 px-6 rounded title-font text-sm" on:click={handlePickThis}>{$t('home.pick_this')}</button>
       </div>
-      <button class="text-sm text-center text-hazardo-lightGray hover:text-hazardo-text" on:click={() => { showResult = false; rollResult = null; aiRecommendation = ''; }}>Cancel</button>
     </div>
   {:else}
     <div class="text-center py-8">
-      <p class="text-hazardo-text">No items found matching your criteria.</p>
-      <p class="text-sm text-hazardo-lightGray mt-2">Add items in the Vault first!</p>
-      <button class="mt-4 text-sm text-hazardo-accent" on:click={() => showResult = false}>Close</button>
+      <p class="text-hazardo-text">{$t('home.no_items')}</p>
+      <p class="text-sm text-hazardo-lightGray mt-2">{$t('home.add_items_first')}</p>
+      <button class="mt-4 text-sm text-hazardo-accent" on:click={() => showResult = false}>{$t('home.close')}</button>
     </div>
   {/if}
 </Modal>
@@ -519,8 +576,8 @@ CRITICAL RULES:
   :global(.markdown-content ul),
   :global(.markdown-content ol) { padding-left: 1.25rem; margin: 0.3rem 0; }
   :global(.markdown-content li) { margin: 0.15rem 0; }
-  :global(.markdown-content code) { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-size: 0.85em; }
-  :global(.markdown-content pre) { background: #f3f4f6; padding: 0.5rem; border-radius: 0.375rem; overflow-x: auto; margin: 0.3rem 0; }
+  :global(.markdown-content code) { background: var(--color-hazardo-background); padding: 0.1rem 0.3rem; border-radius: 0.25rem; font-size: 0.85em; }
+  :global(.markdown-content pre) { background: var(--color-hazardo-background); padding: 0.5rem; border-radius: 0.375rem; overflow-x: auto; margin: 0.3rem 0; }
   :global(.markdown-content strong) { font-weight: 600; }
-  :global(.markdown-content a) { color: #7c3aed; text-decoration: underline; }
+  :global(.markdown-content a) { color: var(--color-hazardo-accent); text-decoration: underline; }
 </style>

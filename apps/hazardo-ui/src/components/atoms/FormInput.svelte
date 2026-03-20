@@ -11,6 +11,6 @@
   {name}
   {type}
   {placeholder}
-  class="border rounded p-2 border-hazardo-lightGray focus:outline-hazardo-accent w-full"
+  class="border rounded p-2 border-hazardo-lightGray focus:outline-hazardo-accent w-full bg-hazardo-surface text-hazardo-text"
   bind:value
 />

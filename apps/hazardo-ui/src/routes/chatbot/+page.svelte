@@ -1,23 +1,16 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-  import { openUrl } from '@tauri-apps/plugin-opener';
-  import { marked } from 'marked';
+  import { handleMarkdownClick, renderMarkdown } from '$lib/markdown';
   import { selectedUser } from '../../stores/userStore';
   import { showToast } from '../../stores/toastStore';
+  import { t, currentLang } from '../../stores/i18nStore';
   import Icon from '../../components/atoms/Icon.svelte';
   import SelectDropdown from '../../components/molecules/SelectDropdown.svelte';
   import type { ChatMessage, AppSetting, Category } from '$lib/types';
 
-  marked.setOptions({ breaks: true, gfm: true });
-
-  const renderer = new marked.Renderer();
-  renderer.link = function ({ href, title, text }: { href: string; title?: string | null | undefined; text: string }) {
-    const titleAttr = title ? ` title="${title}"` : '';
-    return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
-  };
-  marked.use({ renderer });
+  // marked is configured globally by $lib/markdown
 
   let messages: ChatMessage[] = [];
   let inputText = '';
@@ -32,8 +25,9 @@
   let chatAutoCreate = 'false';
   let userCategories: Category[] = [];
   let availableModels: { value: string; label: string }[] = [];
-  let isRecording = false;
-  let speechRecognition: any = null;
+
+  let pendingActions: any[] = [];
+  let pendingResponse = '';
 
   $: if ($selectedUser) {
     loadChat($selectedUser.user_id);
@@ -41,22 +35,17 @@
     loadCategories($selectedUser.user_id);
   }
 
-  onMount(() => {
-    document.addEventListener('click', (e) => {
-      const target = e.target as HTMLElement;
-      const anchor = target.closest('a[href]') as HTMLAnchorElement | null;
-      if (anchor && anchor.href && (anchor.href.startsWith('http://') || anchor.href.startsWith('https://'))) {
-        e.preventDefault();
-        openUrl(anchor.href);
-      }
-    });
-  });
+
 
   async function loadChat(userId: number) {
     try {
       messages = await invoke<ChatMessage[]>('get_chat_messages', { userId });
       await tick();
       scrollToBottom();
+      // Ensure scroll after full render with multiple fallbacks
+      requestAnimationFrame(() => scrollToBottom());
+      setTimeout(() => scrollToBottom(), 100);
+      setTimeout(() => scrollToBottom(), 300);
     } catch (e) {
       console.error('get_chat_messages failed', e);
     }
@@ -135,48 +124,63 @@
         prompt += `- ${cat.category_name} (icon: ${cat.category_icon})\n`;
       }
     }
-    if (chatAutoCreate === 'true') {
-      prompt += `\n\nYou can create categories and items in the user's Hazardo database.
-Database structure:
-- Categories: name, icon (one of: activity, restaurant, board-game, valentine, movie, gift, workout, travel, cooking, misc)
-- Items: name, belongs to a category, time_pref (AM, PM, Night, or Mixed), vibe_pref (Friend, Date, Family, or Mixed), optional notes
-
-When the user asks you to add/create a category or item, include the action in your response using these exact tags:
-
-To create a category:
-[HAZARDO_CREATE_CATEGORY]{"name": "Category Name", "icon": "icon-name"}[/HAZARDO_CREATE_CATEGORY]
-
-To create an item in an existing category:
-[HAZARDO_CREATE_ITEM]{"category": "Category Name", "name": "Item Name", "time_pref": "Mixed", "vibe_pref": "Mixed", "notes": "optional"}[/HAZARDO_CREATE_ITEM]
-
-You can include multiple actions in one response. Always also provide a natural language confirmation of what you created.`;
-    }
+    prompt += `\n\n${$t('ai.respond_instruction')}`;
     return prompt;
   }
 
-  function sanitizeHtml(html: string): string {
-    return html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '')
-      .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
-      .replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '')
-      .replace(/<embed\b[^>]*>/gi, '');
-  }
+  function buildToolInstructions(): string {
+    const existingNames = userCategories.map(c => c.category_name);
+    const catList = existingNames.length > 0 ? `\nExisting categories: ${existingNames.join(', ')}` : '';
+    return `CRITICAL — DATABASE ACTION INSTRUCTIONS (you MUST follow these):
+You can create categories and items in the user's Hazardo vault using special tags.
 
-  function renderMarkdown(content: string): string {
-    const html = marked.parse(content) as string;
-    return sanitizeHtml(html);
+RULES:
+1. When the user asks to add, create, suggest, or generate items or categories, you MUST include the EXACT tags below. Without the tags, NOTHING gets saved.
+2. If the user asks to "add items" without specifying which, YOU MUST generate creative random items that fit the category or context.
+3. ALWAYS include the tags when the user asks to add anything — no matter how long the conversation has been going.
+4. You can include multiple tags in one response.
+5. NEVER translate the JSON keys. NEVER wrap the tags in markdown code blocks or backticks. Write them as plain text.
+6. Always accompany the tags with a short natural language summary listing what you're adding.
+7. At the end of normal conversations about activities, restaurants, travel, movies, etc., suggest: "Would you like me to add these to your vault?" — and if they say yes, include the tags.
+8. For normal conversation (not about adding items), respond naturally WITHOUT any tags.
+9. IMPORTANT: Before creating a new category, check the existing categories listed below. If a matching or similar category already exists, use its EXACT name in the "category" field instead of creating a new one. Only create a new category if nothing similar exists.${catList}
+
+Available icons: activity, restaurant, board-game, valentine, movie, gift, workout, travel, cooking, misc
+Time preferences: AM, PM, Night, Mixed
+Vibe preferences: Friend, Date, Family, Mixed
+
+Tag format for creating a category:
+[HAZARDO_CREATE_CATEGORY]{"name": "Category Name", "icon": "icon-name"}[/HAZARDO_CREATE_CATEGORY]
+
+Tag format for creating an item:
+[HAZARDO_CREATE_ITEM]{"category": "Existing Category Name", "name": "Item Name", "time_pref": "Mixed", "vibe_pref": "Mixed", "notes": "optional"}[/HAZARDO_CREATE_ITEM]
+
+EXAMPLE — user says "add some restaurant ideas":
+Here are some restaurant ideas I'm adding to your vault! 🎲
+
+- **Sushi Night** — Perfect for a date evening
+- **Sunday Brunch** — Great with friends
+
+[HAZARDO_CREATE_ITEM]{"category": "Restaurants", "name": "Sushi Night", "time_pref": "PM", "vibe_pref": "Date", "notes": "Try the omakase"}[/HAZARDO_CREATE_ITEM]
+[HAZARDO_CREATE_ITEM]{"category": "Restaurants", "name": "Sunday Brunch", "time_pref": "AM", "vibe_pref": "Friend", "notes": ""}[/HAZARDO_CREATE_ITEM]`;
   }
 
   function parseActions(response: string): { text: string; actions: any[] } {
     const actions: any[] = [];
-    let text = response;
-    const catRegex = /\[HAZARDO_CREATE_CATEGORY\]([\s\S]*?)\[\/HAZARDO_CREATE_CATEGORY\]/g;
+    // First, unwrap any code blocks that contain the tags
+    let text = response.replace(/```[\s\S]*?```/g, (block) => {
+      // If the code block contains HAZARDO tags, unwrap it
+      if (block.includes('[HAZARDO_CREATE_') || block.includes('[/HAZARDO_CREATE_')) {
+        return block.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '');
+      }
+      return block;
+    });
+    const catRegex = /\[HAZARDO_CREATE_CATEGORY\]\s*([\s\S]*?)\s*\[\/HAZARDO_CREATE_CATEGORY\]/g;
     text = text.replace(catRegex, (_, json) => {
       try { actions.push({ type: 'create_category', ...JSON.parse(json.trim()) }); } catch {}
       return '';
     });
-    const itemRegex = /\[HAZARDO_CREATE_ITEM\]([\s\S]*?)\[\/HAZARDO_CREATE_ITEM\]/g;
+    const itemRegex = /\[HAZARDO_CREATE_ITEM\]\s*([\s\S]*?)\s*\[\/HAZARDO_CREATE_ITEM\]/g;
     text = text.replace(itemRegex, (_, json) => {
       try { actions.push({ type: 'create_item', ...JSON.parse(json.trim()) }); } catch {}
       return '';
@@ -184,19 +188,73 @@ You can include multiple actions in one response. Always also provide a natural 
     return { text: text.trim(), actions };
   }
 
-  async function executeActions(actions: any[]) {
-    if (!$selectedUser || chatAutoCreate !== 'true') return;
+  function normalizeForMatch(s: string): string {
+    return s.trim().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/s$/, '');
+  }
+
+  function findMatchingCategory(cats: Category[], name: string): Category | undefined {
+    const target = name.toLowerCase().trim();
+    // Exact case-insensitive match
+    let match = cats.find(c => c.category_name.toLowerCase() === target);
+    if (match) return match;
+
+    // Normalized match (strip accents + trailing plural 's')
+    const normTarget = normalizeForMatch(name);
+    match = cats.find(c => normalizeForMatch(c.category_name) === normTarget);
+    if (match) return match;
+
+    // Substring/contains match (one contains the other)
+    match = cats.find(c => {
+      const normCat = normalizeForMatch(c.category_name);
+      return normCat.includes(normTarget) || normTarget.includes(normCat);
+    });
+    return match;
+  }
+
+  async function executeActions(actions: any[], overrideCategory?: Category) {
+    if (!$selectedUser) return;
+    let createdCount = 0;
+    let errorCount = 0;
+
     for (const action of actions) {
       try {
         if (action.type === 'create_category') {
-          await invoke('create_category', {
-            userId: $selectedUser.user_id,
-            categoryName: action.name,
-            categoryIcon: action.icon || 'misc',
-          });
-        } else if (action.type === 'create_item') {
+          // Skip category creation when user picked an existing category
+          if (overrideCategory) continue;
+          // Skip if a similar category already exists
           const cats = await invoke<Category[]>('get_categories', { userId: $selectedUser.user_id });
-          const cat = cats.find(c => c.category_name.toLowerCase() === (action.category || '').toLowerCase());
+          const existing = findMatchingCategory(cats, action.name);
+          if (!existing) {
+            await invoke('create_category', {
+              userId: $selectedUser.user_id,
+              categoryName: action.name,
+              categoryIcon: action.icon || 'misc',
+            });
+            createdCount++;
+          }
+        } else if (action.type === 'create_item') {
+          let cats = await invoke<Category[]>('get_categories', { userId: $selectedUser.user_id });
+          let cat: Category | undefined;
+
+          if (overrideCategory) {
+            // User chose a specific category — use it
+            cat = cats.find(c => c.category_id === overrideCategory.category_id);
+          } else {
+            // Fuzzy match or auto-create
+            cat = findMatchingCategory(cats, action.category || '');
+            if (!cat && action.category) {
+              await invoke('create_category', {
+                userId: $selectedUser.user_id,
+                categoryName: action.category,
+                categoryIcon: action.icon || 'misc',
+              });
+              cats = await invoke<Category[]>('get_categories', { userId: $selectedUser.user_id });
+              cat = findMatchingCategory(cats, action.category);
+            }
+          }
+
           if (cat) {
             await invoke('create_item', {
               userId: $selectedUser.user_id,
@@ -208,13 +266,25 @@ You can include multiple actions in one response. Always also provide a natural 
               location: null,
               description: null,
             });
+            createdCount++;
+          } else {
+            errorCount++;
           }
         }
       } catch (e) {
         console.error('execute action failed', action, e);
+        errorCount++;
       }
     }
     if ($selectedUser) await loadCategories($selectedUser.user_id);
+
+    if (createdCount > 0 && errorCount === 0) {
+      showToast($t('chatbot.items_added'), 'success');
+    } else if (createdCount > 0 && errorCount > 0) {
+      showToast(`${createdCount} added, ${errorCount} failed`, 'error');
+    } else {
+      showToast($t('chatbot.error') || 'Failed to add items', 'error');
+    }
   }
 
   function scrollToBottom() {
@@ -242,14 +312,8 @@ You can include multiple actions in one response. Always also provide a natural 
 
       const aiResponse = await callLlm(userText);
 
-      // Parse actions if auto-create enabled
-      const { text: cleanResponse, actions } = chatAutoCreate === 'true'
-        ? parseActions(aiResponse)
-        : { text: aiResponse, actions: [] };
-
-      if (actions.length > 0) {
-        await executeActions(actions);
-      }
+      // Always parse actions from AI response
+      const { text: cleanResponse, actions } = parseActions(aiResponse);
 
       const assistantMsg = await invoke<ChatMessage>('save_chat_message', {
         userId: $selectedUser.user_id,
@@ -257,6 +321,13 @@ You can include multiple actions in one response. Always also provide a natural 
         content: cleanResponse,
       });
       messages = [...messages, assistantMsg];
+
+      if (actions.length > 0) {
+        pendingActions = actions;
+        pendingResponse = cleanResponse;
+        await tick();
+        scrollToBottom();
+      }
       await tick();
       scrollToBottom();
     } catch (e) {
@@ -275,13 +346,23 @@ You can include multiple actions in one response. Always also provide a natural 
 
   async function callLlm(userMessage: string): Promise<string> {
     const systemPrompt = buildSystemPrompt();
+    const toolInstructions = buildToolInstructions();
+
+    // Detect if user is asking to add/create items for a stronger reminder
+    const isAddRequest = /\b(add|ajoute|créé|crée|create|génère|genere|generate|suggest|met|mets|random)\b/i.test(userMessage);
+    const reminder = isAddRequest
+      ? 'The user is asking you to ADD or CREATE items RIGHT NOW. You MUST include [HAZARDO_CREATE_ITEM] and/or [HAZARDO_CREATE_CATEGORY] tags in your response. Generate items if none were specified. Do NOT just describe them — include the actual tags.'
+      : '';
+
     const body: Record<string, any> = {
       messages: [
         { role: 'system', content: systemPrompt },
         ...messages.slice(-20).map(m => ({ role: m.role, content: m.content })),
+        // Always inject tool instructions close to the user message so the LLM never forgets them
+        { role: 'system', content: toolInstructions + (reminder ? '\n\n' + reminder : '') },
         { role: 'user', content: userMessage },
       ],
-      max_tokens: 1024,
+      max_tokens: 2048,
     };
 
     let endpoint = '';
@@ -340,32 +421,6 @@ You can include multiple actions in one response. Always also provide a natural 
     }
   }
 
-  function toggleSpeechRecognition() {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      showToast('Voice input is not supported on this device', 'error');
-      return;
-    }
-    if (isRecording && speechRecognition) {
-      speechRecognition.stop();
-      isRecording = false;
-      return;
-    }
-    speechRecognition = new SpeechRecognition();
-    speechRecognition.continuous = false;
-    speechRecognition.interimResults = false;
-    speechRecognition.lang = 'en-US';
-    speechRecognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      inputText = (inputText ? inputText + ' ' : '') + transcript;
-      isRecording = false;
-    };
-    speechRecognition.onerror = () => { isRecording = false; };
-    speechRecognition.onend = () => { isRecording = false; };
-    speechRecognition.start();
-    isRecording = true;
-  }
-
   async function saveModelSelection() {
     if (!$selectedUser) return;
     try {
@@ -386,9 +441,9 @@ You can include multiple actions in one response. Always also provide a natural 
   {#if !llmConfigured}
     <div class="flex-1 flex flex-col items-center justify-center text-center gap-4">
       <Icon name="wifi-off" size={48} />
-      <p class="text-hazardo-text font-semibold">ChatBot needs configuration</p>
+      <p class="text-hazardo-text font-semibold">{$t('chatbot.needs_config')}</p>
       <p class="text-sm text-hazardo-lightGray max-w-xs">
-        Go to <a href="/setting" class="text-hazardo-accent underline">Settings</a> &gt; Manage LLM Model (AI) to configure your AI connection.
+        {$t('chatbot.config_msg').split('Settings')[0]}<a href="/setting" class="text-hazardo-accent underline">{$t('chatbot.settings')}</a>{$t('chatbot.config_msg').split('Settings').slice(1).join('Settings')}
       </p>
     </div>
   {:else}
@@ -396,14 +451,16 @@ You can include multiple actions in one response. Always also provide a natural 
     <div class="flex-1 overflow-y-auto py-4 flex flex-col gap-3" bind:this={chatContainer}>
       {#if messages.length === 0}
         <div class="flex-1 flex items-center justify-center">
-          <p class="text-sm text-hazardo-lightGray">Start a conversation with Hazardo AI!</p>
+          <p class="text-sm text-hazardo-lightGray">{$t('chatbot.start_convo')}</p>
         </div>
       {:else}
         {#each messages as msg}
           <div class="flex {msg.role === 'user' ? 'justify-end' : 'justify-start'}">
-            <div class="max-w-[80%] rounded-lg px-3 py-2 text-sm {msg.role === 'user' ? 'bg-hazardo-accent text-white' : 'bg-white border border-hazardo-lightGray text-hazardo-text'}">
+            <div class="max-w-[80%] rounded-lg px-3 py-2 text-sm {msg.role === 'user' ? 'bg-hazardo-accent text-white' : 'bg-hazardo-surface border border-hazardo-lightGray text-hazardo-text'}">
               {#if msg.role === 'assistant'}
-                <div class="markdown-content">{@html renderMarkdown(msg.content)}</div>
+                <!-- svelte-ignore a11y-click-events-have-key-events -->
+                <!-- svelte-ignore a11y-no-static-element-interactions -->
+                <div class="markdown-content" on:click={handleMarkdownClick}>{@html renderMarkdown(msg.content)}</div>
               {:else}
                 {msg.content}
               {/if}
@@ -412,8 +469,42 @@ You can include multiple actions in one response. Always also provide a natural 
         {/each}
         {#if sending}
           <div class="flex justify-start">
-            <div class="bg-white border border-hazardo-lightGray rounded-lg px-3 py-2 text-sm text-hazardo-lightGray">
-              Thinking...
+            <div class="bg-hazardo-surface border border-hazardo-lightGray rounded-lg px-3 py-2 text-sm text-hazardo-lightGray">
+              {$t('chatbot.thinking')}
+            </div>
+          </div>
+        {/if}
+        {#if pendingActions.length > 0}
+          <div class="flex justify-start">
+            <div class="max-w-[85%] bg-hazardo-accent/10 border border-hazardo-accent/30 rounded-lg px-3 py-2 text-sm">
+              <p class="font-medium text-hazardo-text mb-2">{$t('chatbot.ai_wants_add')}</p>
+              <ul class="text-xs text-hazardo-text/70 mb-2 space-y-1">
+                {#each pendingActions.filter(a => a.type === 'create_item') as action}
+                  <li>
+                    <span class="font-medium">{$t('chatbot.item')}</span> {action.name}
+                  </li>
+                {/each}
+              </ul>
+              <p class="text-xs font-medium text-hazardo-text mb-1">{$t('chatbot.select_category')}</p>
+              <div class="flex flex-wrap gap-1.5 mb-2">
+                {#each userCategories as cat}
+                  <button
+                    class="flex items-center gap-1 px-2 py-1 rounded-full bg-hazardo-surface border border-hazardo-lightGray text-xs text-hazardo-text hover:border-hazardo-accent hover:bg-hazardo-accent/10 transition-colors"
+                    on:click={async () => { const actions = [...pendingActions]; pendingActions = []; await executeActions(actions, cat); }}
+                  >
+                    <Icon name={cat.category_icon} size={14} />
+                    {cat.category_name}
+                  </button>
+                {/each}
+              </div>
+              <div class="flex gap-2">
+                <button class="px-3 py-1 rounded bg-hazardo-primary text-white text-xs font-medium" on:click={async () => { const actions = [...pendingActions]; pendingActions = []; await executeActions(actions); }}>
+                  {$t('chatbot.create_new')}
+                </button>
+                <button class="px-3 py-1 rounded border border-hazardo-lightGray text-hazardo-text text-xs" on:click={() => { pendingActions = []; }}>
+                  {$t('chatbot.cancel')}
+                </button>
+              </div>
             </div>
           </div>
         {/if}
@@ -424,24 +515,17 @@ You can include multiple actions in one response. Always also provide a natural 
     <div class="border-t border-hazardo-lightGray py-3 mb-4">
       {#if availableModels.length > 0}
         <div class="flex items-center gap-2 mb-2">
-          <span class="text-xs text-hazardo-lightGray shrink-0">Model:</span>
+          <span class="text-xs text-hazardo-lightGray shrink-0">{$t('chatbot.model')}</span>
           <div class="flex-1">
             <SelectDropdown options={availableModels} bind:selected={llmModel} placeholder="Select model..." on:change={saveModelSelection} />
           </div>
         </div>
       {/if}
       <div class="flex items-center gap-2">
-        <button
-          class="rounded-full w-9 h-9 flex items-center justify-center transition-colors {isRecording ? 'bg-red-500 text-white animate-pulse' : 'text-hazardo-lightGray hover:text-hazardo-accent'}"
-          on:click={toggleSpeechRecognition}
-          title={isRecording ? 'Stop recording' : 'Voice input'}
-        >
-          <Icon name="microphone" size={18} />
-        </button>
         <input
           type="text"
-          class="flex-1 border rounded-full px-4 py-2 text-sm border-hazardo-lightGray focus:outline-hazardo-accent bg-white"
-          placeholder="Ask me anything..."
+          class="flex-1 border rounded-full px-4 py-2 text-sm border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface text-hazardo-text"
+          placeholder={$t('chatbot.placeholder')}
           bind:value={inputText}
           on:keydown={handleKeydown}
           disabled={sending}
@@ -466,16 +550,16 @@ You can include multiple actions in one response. Always also provide a natural 
   :global(.markdown-content ul),
   :global(.markdown-content ol) { margin: 0.25rem 0; padding-left: 1.5rem; }
   :global(.markdown-content li) { margin: 0.125rem 0; }
-  :global(.markdown-content code) { background: #f1f5f9; padding: 0.125rem 0.25rem; border-radius: 0.25rem; font-size: 0.8em; }
-  :global(.markdown-content pre) { background: #f1f5f9; padding: 0.5rem; border-radius: 0.375rem; overflow-x: auto; margin: 0.5rem 0; }
+  :global(.markdown-content code) { background: var(--color-hazardo-background); padding: 0.125rem 0.25rem; border-radius: 0.25rem; font-size: 0.8em; }
+  :global(.markdown-content pre) { background: var(--color-hazardo-background); padding: 0.5rem; border-radius: 0.375rem; overflow-x: auto; margin: 0.5rem 0; }
   :global(.markdown-content pre code) { background: none; padding: 0; }
   :global(.markdown-content strong) { font-weight: 600; }
   :global(.markdown-content em) { font-style: italic; }
-  :global(.markdown-content a) { color: #3b82f6; text-decoration: underline; }
-  :global(.markdown-content blockquote) { border-left: 3px solid #d1d5db; padding-left: 0.75rem; margin: 0.5rem 0; color: #6b7280; }
+  :global(.markdown-content a) { color: var(--color-hazardo-accent); text-decoration: underline; }
+  :global(.markdown-content blockquote) { border-left: 3px solid var(--color-hazardo-lightGray); padding-left: 0.75rem; margin: 0.5rem 0; color: var(--color-hazardo-lightGray); }
   :global(.markdown-content table) { border-collapse: collapse; margin: 0.5rem 0; width: 100%; }
   :global(.markdown-content th),
-  :global(.markdown-content td) { border: 1px solid #d1d5db; padding: 0.25rem 0.5rem; font-size: 0.85em; }
-  :global(.markdown-content th) { background: #f9fafb; font-weight: 600; }
-  :global(.markdown-content hr) { border: none; border-top: 1px solid #e5e7eb; margin: 0.5rem 0; }
+  :global(.markdown-content td) { border: 1px solid var(--color-hazardo-lightGray); padding: 0.25rem 0.5rem; font-size: 0.85em; }
+  :global(.markdown-content th) { background: var(--color-hazardo-background); font-weight: 600; }
+  :global(.markdown-content hr) { border: none; border-top: 1px solid var(--color-hazardo-lightGray); margin: 0.5rem 0; }
 </style>

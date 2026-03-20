@@ -1,7 +1,7 @@
 {
   "name": "hazardo",
-  "version": "0.1.0",
-  "description": "",
+  "version": "1.0.0",
+  "description": "Hazardo - Random activity picker app",
   "type": "module",
   "scripts": {
     "dev": "vite dev --host",
@@ -16,6 +16,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-http": "^2.5.7",
     "@tauri-apps/plugin-opener": "^2",
+    "dompurify": "^3.3.3",
     "marked": "^17.0.4"
   },
   "devDependencies": {

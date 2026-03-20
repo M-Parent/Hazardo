@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import Icon from '../atoms/Icon.svelte';
 
   export let container: HTMLElement | null = null;
   let visible = false;
+  let prevContainer: HTMLElement | null = null;
 
   function handleScroll() {
     if (container) {
@@ -16,9 +18,16 @@
     }
   }
 
-  $: if (container) {
-    container.addEventListener('scroll', handleScroll);
+  // Clean up listener when container changes
+  $: if (container !== prevContainer) {
+    if (prevContainer) prevContainer.removeEventListener('scroll', handleScroll);
+    if (container) container.addEventListener('scroll', handleScroll);
+    prevContainer = container;
   }
+
+  onDestroy(() => {
+    if (prevContainer) prevContainer.removeEventListener('scroll', handleScroll);
+  });
 </script>
 
 {#if visible}

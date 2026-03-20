@@ -8,7 +8,7 @@
 <div class="relative">
   <input
     type="text"
-    class="w-full border rounded p-2 pr-9 border-hazardo-lightGray focus:outline-hazardo-accent bg-white text-sm"
+    class="w-full border rounded p-2 pr-9 border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface text-sm text-hazardo-text"
     {placeholder}
     bind:value
   />

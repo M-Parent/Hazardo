@@ -31,7 +31,7 @@
 
 <div class="relative">
   <button
-    class="border rounded px-3 py-1 text-sm font-semibold border-hazardo-lightGray flex items-center gap-1 bg-white"
+    class="border rounded px-3 py-1 text-sm font-semibold border-hazardo-lightGray flex items-center gap-1 bg-hazardo-surface"
     on:click={() => dropdownOpen = !dropdownOpen}
   >
     {$selectedUser?.user_name ?? 'Username'}
@@ -42,7 +42,7 @@
     <!-- svelte-ignore a11y-click-events-have-key-events -->
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div class="fixed inset-0 z-10" on:click={() => dropdownOpen = false}></div>
-    <div class="absolute right-0 mt-1 w-44 bg-white border border-hazardo-lightGray rounded shadow-lg z-20">
+    <div class="absolute right-0 mt-1 w-44 bg-hazardo-surface border border-hazardo-lightGray rounded shadow-lg z-20">
       {#each $users as u}
         <button
           class="w-full text-left px-3 py-2 text-sm hover:bg-hazardo-background {$selectedUser?.user_id === u.user_id ? 'text-hazardo-primary font-semibold' : ''}"

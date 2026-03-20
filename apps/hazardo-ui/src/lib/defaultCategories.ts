@@ -4,7 +4,7 @@ export const DEFAULT_CATEGORIES = [
   { name: "Restaurant", icon: "restaurant" },
   { name: "Travel", icon: "travel" },
   { name: "Valentine Day", icon: "valentine" },
-  { name: "Board Game", icon: "dice" },
+  { name: "Board Games", icon: "dice" },
   { name: "Movies", icon: "movie" },
   { name: "Workout", icon: "workout" },
   { name: "Cooking", icon: "cooking" },
