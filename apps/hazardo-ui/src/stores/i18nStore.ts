@@ -80,6 +80,7 @@ const translations: Record<Lang, Record<string, string>> = {
     "vault.already_picked": "Already Picked (strikethrough in list)",
     "vault.item_deleted": "Item moved to recycle bin",
     "vault.category_deleted": "Category moved to recycle bin",
+    "vault.category_has_items": "Can't delete — this category still has items",
 
     // Chatbot page
     "chatbot.needs_config": "ChatBot needs configuration",
@@ -409,6 +410,8 @@ const translations: Record<Lang, Record<string, string>> = {
     "vault.already_picked": "Déjà choisi (barré dans la liste)",
     "vault.item_deleted": "Élément envoyé à la corbeille",
     "vault.category_deleted": "Catégorie envoyée à la corbeille",
+    "vault.category_has_items":
+      "Impossible de supprimer — il y a encore des éléments dans cette catégorie",
 
     // Chatbot page
     "chatbot.needs_config": "Configuration requise",

@@ -197,6 +197,11 @@
 
   async function handleDeleteCategory() {
     if (!editingCategory || !$selectedUser) return;
+    const catItems = await invoke<Item[]>('get_items', { userId: $selectedUser.user_id, categoryId: editingCategory.category_id });
+    if (catItems.length > 0) {
+      showToast($t('vault.category_has_items'), 'error');
+      return;
+    }
     try {
       await invoke('delete_category', { categoryId: editingCategory.category_id });
       showCategoryModal = false;
