@@ -141,6 +141,7 @@
     try {
       await invoke('delete_pick', { pickId });
       await loadPicks($selectedUser.user_id, selectedCategoryId ? Number(selectedCategoryId) : null);
+      showToast($t('picked.pick_deleted'), 'success');
     } catch (e) {
       console.error('delete_pick failed', e);
     }

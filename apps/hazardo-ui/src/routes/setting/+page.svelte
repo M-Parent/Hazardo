@@ -1143,7 +1143,13 @@
 
 <!-- Sync Modal -->
 <Modal show={activeSection === 'manage-sync'} title={$t('settings.manage_sync')} on:close={() => activeSection = ''}>
-  <p class="text-sm text-hazardo-lightGray">{$t('sync.description')}</p>
+  <div class="flex flex-col items-center gap-3 py-4">
+    <div class="w-12 h-12 rounded-full bg-hazardo-accent/10 flex items-center justify-center">
+      <Icon name="sync" size={24} />
+    </div>
+    <span class="inline-block px-3 py-1 rounded-full bg-yellow-100 text-yellow-700 text-xs font-semibold">{$t('sync.in_development')}</span>
+    <p class="text-sm text-hazardo-lightGray text-center">{$t('sync.description')}</p>
+  </div>
 </Modal>
 
 <!-- Location Modal -->

@@ -14,6 +14,7 @@
   import type { Category, Item } from '$lib/types';
   import { DEFAULT_CATEGORIES } from '$lib/defaultCategories';
   import { TIME_OPTIONS, VIBE_OPTIONS } from '$lib/constants';
+  import { showToast } from '../../stores/toastStore';
 
   let categories: Category[] = [];
   let items: Item[] = [];
@@ -188,8 +189,23 @@
     try {
       await invoke('delete_item', { itemId });
       await loadItems($selectedUser.user_id, selectedCategoryId ? Number(selectedCategoryId) : null);
+      showToast($t('vault.item_deleted'), 'success');
     } catch (e) {
       console.error('delete_item failed', e);
+    }
+  }
+
+  async function handleDeleteCategory() {
+    if (!editingCategory || !$selectedUser) return;
+    try {
+      await invoke('delete_category', { categoryId: editingCategory.category_id });
+      showCategoryModal = false;
+      selectedCategoryId = '';
+      await loadCategories($selectedUser.user_id);
+      await loadItems($selectedUser.user_id, null);
+      showToast($t('vault.category_deleted'), 'success');
+    } catch (e) {
+      console.error('delete_category failed', e);
     }
   }
 
@@ -293,6 +309,9 @@
         <button type="button" class="px-4 py-2 rounded border border-hazardo-accent text-hazardo-accent text-sm font-medium hover:bg-hazardo-background transition-colors" on:click={() => handleSaveCategory(true)}>{$t('vault.add')}</button>
         <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveCategory(false)}>{$t('vault.done')}</button>
       {:else}
+        <button type="button" class="px-4 py-2 rounded bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors" on:click={handleDeleteCategory}>
+          <Icon name="trash" size={14} />
+        </button>
         <button type="button" class="px-4 py-2 rounded bg-hazardo-primary text-white text-sm font-medium" on:click={() => handleSaveCategory(false)}>{$t('settings.save')}</button>
       {/if}
     </div>

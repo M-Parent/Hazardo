@@ -51,6 +51,7 @@ const translations: Record<Lang, Record<string, string>> = {
     "picked.delete_image_msg":
       "Are you sure you want to remove this image? This action cannot be undone.",
     "picked.delete": "Delete",
+    "picked.pick_deleted": "Pick moved to recycle bin",
 
     // Vault page
     "vault.title": "Activity Vault",
@@ -77,6 +78,8 @@ const translations: Record<Lang, Record<string, string>> = {
     "vault.notes_optional": "Notes (optional):",
     "vault.add_notes_ph": "Add notes...",
     "vault.already_picked": "Already Picked (strikethrough in list)",
+    "vault.item_deleted": "Item moved to recycle bin",
+    "vault.category_deleted": "Category moved to recycle bin",
 
     // Chatbot page
     "chatbot.needs_config": "ChatBot needs configuration",
@@ -203,6 +206,7 @@ const translations: Record<Lang, Record<string, string>> = {
     // Sync
     "sync.description":
       "Synchronization requires the Hazardo desktop API server. Configure and start the Docker container on your network to enable sync.",
+    "sync.in_development": "In Development",
 
     // Setup page
     "setup.welcome": "Welcome to Hazardo!",
@@ -376,6 +380,7 @@ const translations: Record<Lang, Record<string, string>> = {
     "picked.delete_image_msg":
       "Voulez-vous supprimer cette image ? Cette action est irréversible.",
     "picked.delete": "Supprimer",
+    "picked.pick_deleted": "Pick envoyé à la corbeille",
 
     // Vault page
     "vault.title": "Coffre",
@@ -402,6 +407,8 @@ const translations: Record<Lang, Record<string, string>> = {
     "vault.notes_optional": "Notes (optionnel) :",
     "vault.add_notes_ph": "Ajouter des notes...",
     "vault.already_picked": "Déjà choisi (barré dans la liste)",
+    "vault.item_deleted": "Élément envoyé à la corbeille",
+    "vault.category_deleted": "Catégorie envoyée à la corbeille",
 
     // Chatbot page
     "chatbot.needs_config": "Configuration requise",
@@ -528,6 +535,7 @@ const translations: Record<Lang, Record<string, string>> = {
     // Sync
     "sync.description":
       "La synchronisation nécessite le serveur Hazardo. Configurez le conteneur Docker sur votre réseau.",
+    "sync.in_development": "En développement",
 
     // Setup page
     "setup.welcome": "Bienvenue sur Hazardo !",
