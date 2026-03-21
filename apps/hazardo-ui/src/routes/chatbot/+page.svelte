@@ -529,7 +529,7 @@ Here are some restaurant ideas I'm adding to your vault! 🎲
           bind:value={inputText}
           on:keydown={handleKeydown}
           disabled={sending}
-        />
+        ></textarea>
         <button
           class="bg-hazardo-accent text-white rounded-full w-9 h-9 flex items-center justify-center hover:bg-hazardo-primary transition-colors disabled:opacity-50"
           on:click={sendMessage}
