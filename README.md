@@ -24,13 +24,13 @@ Hazardo is a random activity picker that helps you choose what to do based on yo
 
 ## Download
 
-| Platform              | Download                                                                                 |
-| --------------------- | ---------------------------------------------------------------------------------------- |
-| Android               | [`.apk` from latest release](https://github.com/pmusic62/Hazardo/releases)               |
-| Windows               | [`.exe` installer from latest release](https://github.com/pmusic62/Hazardo/releases)     |
-| macOS (Apple Silicon) | [`.dmg` from latest release](https://github.com/pmusic62/Hazardo/releases)               |
-| macOS (Intel)         | [`.dmg` (x64) from latest release](https://github.com/pmusic62/Hazardo/releases)         |
-| Linux                 | [`.AppImage` / `.deb` from latest release](https://github.com/pmusic62/Hazardo/releases) |
+| Platform              | Download                                                                                            |
+| --------------------- | --------------------------------------------------------------------------------------------------- |
+| Android               | [`.apk` from latest release](https://github.com/M-Parent/Hazardo/releases/tag/v1.0.0/)              |
+| Windows               | [`.exe` installer from latest release](https://github.com/M-Parent/Hazardo/releases/tag/v1.0.0/)    |
+| macOS (Apple Silicon) | [`.dmg` from latest release](https://github.com/M-Parent/Hazardo/releases/tag/v1.0.0/)              |
+| macOS (Intel)         | [`.dmg` (x64) from latest release](https://github.com/M-Parent/Hazardo/releases/tag/v1.0.0)         |
+| Linux                 | [`.AppImage` / `.deb` from latest release](https://github.com/M-Parent/Hazardo/releases/tag/v1.0.0) |
 
 ## Import Lists
 

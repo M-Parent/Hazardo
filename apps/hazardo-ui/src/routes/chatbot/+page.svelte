@@ -521,10 +521,10 @@ Here are some restaurant ideas I'm adding to your vault! 🎲
           </div>
         </div>
       {/if}
-      <div class="flex items-center gap-2">
-        <input
-          type="text"
-          class="flex-1 border rounded-full px-4 py-2 text-sm border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface text-hazardo-text"
+      <div class="flex items-end gap-2">
+        <textarea
+          rows="3"
+          class="flex-1 border rounded-2xl px-4 py-2 text-sm border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface text-hazardo-text resize-none"
           placeholder={$t('chatbot.placeholder')}
           bind:value={inputText}
           on:keydown={handleKeydown}

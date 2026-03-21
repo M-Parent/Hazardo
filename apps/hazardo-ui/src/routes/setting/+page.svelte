@@ -712,21 +712,21 @@
     return formatDateLocalized(dateStr, $currentLang);
   }
 
-  function getSectionLabel(section: any): string {
+  function getSectionLabel(section: any, _t: Function): string {
     const map: Record<string, string> = {
-      'documentation': $t('settings.documentation'),
-      'recycle-bin': $t('settings.recycle_bin'),
-      'bulk-import': $t('settings.bulk_import'),
-      'bulk-export': $t('settings.bulk_export'),
-      'theme_label': $t('settings.theme'),
-      'language_label': $t('settings.language'),
-      'device-name': $t('settings.device_name'),
-      'manage-user': $t('settings.manage_user'),
-      'manage-sync': $t('settings.manage_sync'),
-      'manage-location': $t('settings.location_services'),
-      'manage-llm': $t('settings.manage_llm'),
+      'documentation': _t('settings.documentation'),
+      'recycle-bin': _t('settings.recycle_bin'),
+      'bulk-import': _t('settings.bulk_import'),
+      'bulk-export': _t('settings.bulk_export'),
+      'theme': _t('settings.theme'),
+      'language': _t('settings.language'),
+      'device-name': _t('settings.device_name'),
+      'manage-user': _t('settings.manage_user'),
+      'manage-sync': _t('settings.manage_sync'),
+      'manage-location': _t('settings.location_services'),
+      'manage-llm': _t('settings.manage_llm'),
     };
-    return map[section.label] || map[section.key] || section.label;
+    return map[section.key] || section.label;
   }
 
   function getSectionExtra(section: any): string {
@@ -764,7 +764,7 @@
         on:click={() => openSection(section.key)}
       >
         <span class="text-sm font-medium">
-          {getSectionLabel(section)}
+          {getSectionLabel(section, $t)}
           {#if section.extra}
             <span class="text-hazardo-lightGray font-normal">{getSectionExtra(section)}</span>
           {/if}
