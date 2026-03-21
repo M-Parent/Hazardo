@@ -1,0 +1,190 @@
+name: CI — Build & Test
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  # ─── Frontend checks ──────────────────────────────────────
+  check-frontend:
+    name: Frontend lint & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/hazardo-ui/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: apps/hazardo-ui
+
+      - name: Svelte check
+        run: pnpm check
+        working-directory: apps/hazardo-ui
+
+  # ─── Desktop builds (Windows / macOS / Linux) ─────────────
+  build-desktop:
+    name: Build ${{ matrix.name }}
+    needs: check-frontend
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+          - name: macOS (ARM)
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - name: macOS (Intel)
+            runner: macos-13
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - name: Linux
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/hazardo-ui/pnpm-lock.yaml
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/hazardo-ui/src-tauri
+          key: ${{ matrix.target }}
+
+      # Linux system deps for Tauri
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Install frontend dependencies
+        run: pnpm install
+        working-directory: apps/hazardo-ui
+
+      - name: Build Tauri app
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        working-directory: apps/hazardo-ui
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hazardo-${{ matrix.target }}
+          path: |
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            apps/hazardo-ui/src-tauri/target/release/bundle/**/*.exe
+            apps/hazardo-ui/src-tauri/target/release/bundle/**/*.msi
+            apps/hazardo-ui/src-tauri/target/release/bundle/**/*.deb
+            apps/hazardo-ui/src-tauri/target/release/bundle/**/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+  # ─── Android build ─────────────────────────────────────────
+  build-android:
+    name: Build Android
+    needs: check-frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/hazardo-ui/pnpm-lock.yaml
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/hazardo-ui/src-tauri
+          key: android
+
+      - name: Install frontend dependencies
+        run: pnpm install
+        working-directory: apps/hazardo-ui
+
+      - name: Build Android APK
+        run: pnpm tauri android build --apk
+        working-directory: apps/hazardo-ui
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hazardo-android
+          path: apps/hazardo-ui/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 7

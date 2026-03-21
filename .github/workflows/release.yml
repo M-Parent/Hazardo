@@ -1,0 +1,219 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  # ─── Get version from tag ──────────────────────────────────
+  version:
+    name: Extract version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  # ─── Desktop builds ────────────────────────────────────────
+  build-desktop:
+    name: Release ${{ matrix.name }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+          - name: macOS (ARM)
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - name: macOS (Intel)
+            runner: macos-13
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - name: Linux
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/hazardo-ui/pnpm-lock.yaml
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/hazardo-ui/src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Install frontend dependencies
+        run: pnpm install
+        working-directory: apps/hazardo-ui
+
+      - name: Build Tauri app
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        working-directory: apps/hazardo-ui
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            apps/hazardo-ui/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            apps/hazardo-ui/src-tauri/target/release/bundle/**/*.exe
+            apps/hazardo-ui/src-tauri/target/release/bundle/**/*.msi
+            apps/hazardo-ui/src-tauri/target/release/bundle/**/*.deb
+            apps/hazardo-ui/src-tauri/target/release/bundle/**/*.AppImage
+          if-no-files-found: error
+
+  # ─── Android build ─────────────────────────────────────────
+  build-android:
+    name: Release Android
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/hazardo-ui/pnpm-lock.yaml
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/hazardo-ui/src-tauri
+          key: android
+
+      - name: Install frontend dependencies
+        run: pnpm install
+        working-directory: apps/hazardo-ui
+
+      - name: Build Android APK
+        run: pnpm tauri android build --apk
+        working-directory: apps/hazardo-ui
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: apps/hazardo-ui/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+  # ─── Create GitHub Release ─────────────────────────────────
+  publish:
+    name: Publish GitHub Release
+    needs: [version, build-desktop, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+
+      - name: Flatten & rename artifacts
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          mkdir -p dist
+
+          # Windows
+          find artifacts/release-x86_64-pc-windows-msvc -name "*.exe" -exec cp {} "dist/Hazardo-v${VERSION}-windows-setup.exe" \; 2>/dev/null || true
+          find artifacts/release-x86_64-pc-windows-msvc -name "*.msi" -exec cp {} "dist/Hazardo-v${VERSION}-windows.msi" \; 2>/dev/null || true
+
+          # macOS ARM
+          find artifacts/release-aarch64-apple-darwin -name "*.dmg" -exec cp {} "dist/Hazardo-v${VERSION}-macos-arm64.dmg" \; 2>/dev/null || true
+
+          # macOS Intel
+          find artifacts/release-x86_64-apple-darwin -name "*.dmg" -exec cp {} "dist/Hazardo-v${VERSION}-macos-x64.dmg" \; 2>/dev/null || true
+
+          # Linux
+          find artifacts/release-x86_64-unknown-linux-gnu -name "*.deb" -exec cp {} "dist/Hazardo-v${VERSION}-linux.deb" \; 2>/dev/null || true
+          find artifacts/release-x86_64-unknown-linux-gnu -name "*.AppImage" -exec cp {} "dist/Hazardo-v${VERSION}-linux.AppImage" \; 2>/dev/null || true
+
+          # Android
+          find artifacts/release-android -name "*.apk" -exec cp {} "dist/Hazardo-v${VERSION}-android.apk" \; 2>/dev/null || true
+
+          ls -la dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Hazardo v${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
