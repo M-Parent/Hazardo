@@ -14,6 +14,15 @@
 
   let messages: ChatMessage[] = [];
   let inputText = '';
+  let inputTextarea: HTMLTextAreaElement;
+
+  function autoGrow() {
+    if (!inputTextarea) return;
+    inputTextarea.style.height = 'auto';
+    const lineHeight = parseFloat(getComputedStyle(inputTextarea).lineHeight) || 20;
+    const maxHeight = lineHeight * 4;
+    inputTextarea.style.height = Math.min(inputTextarea.scrollHeight, maxHeight) + 'px';
+  }
   let chatContainer: HTMLElement;
   let sending = false;
   let llmConfigured = false;
@@ -298,6 +307,7 @@ Here are some restaurant ideas I'm adding to your vault! 🎲
 
     const userText = inputText.trim();
     inputText = '';
+    if (inputTextarea) inputTextarea.style.height = 'auto';
     sending = true;
 
     try {
@@ -523,11 +533,14 @@ Here are some restaurant ideas I'm adding to your vault! 🎲
       {/if}
       <div class="flex items-end gap-2">
         <textarea
-          rows="3"
-          class="flex-1 border rounded-2xl px-4 py-2 text-sm border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface text-hazardo-text resize-none"
+          bind:this={inputTextarea}
+          rows="1"
+          class="flex-1 border rounded-full px-4 py-2 text-sm border-hazardo-lightGray focus:outline-hazardo-accent bg-hazardo-surface text-hazardo-text resize-none leading-5 overflow-y-auto"
+          style="max-height: calc(1.25rem * 4 + 1rem);"
           placeholder={$t('chatbot.placeholder')}
           bind:value={inputText}
           on:keydown={handleKeydown}
+          on:input={autoGrow}
           disabled={sending}
         ></textarea>
         <button
